@@ -6,10 +6,15 @@ Modular monolith for Polymarket 5m/15m crypto up/down markets: one **engine** pr
 
 ```bash
 make help          # list targets
+make db-up         # Postgres via Docker (poly/poly @ localhost:5433)
 make engine        # trading engine (dry-run by default)
-make dashboard     # read-only API on :8080
-make web-dev       # Next.js UI on :3000
+make dashboard     # starts DB if needed, then read-only API on :8081 (PORT=… to override)
+make web-dev       # Next.js UI on :3000 (proxies /api to dashboard PORT)
 ```
+
+**Database:** `make dashboard` runs `make db-up` first. Port **5433** is used so this stack does not clash with other Postgres on `:5432`. Stop with `make db-down`.
+
+Default dashboard port is **8081** (see `Makefile`) to avoid clashing with other services on **8080**. `make web-dev` picks the first free port from **3000–3099** and prints the URL; set `WEB_PORT=3005` to pin a port.
 
 Or run binaries directly:
 

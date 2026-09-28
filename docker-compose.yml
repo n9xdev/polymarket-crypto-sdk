@@ -1,0 +1,22 @@
+# Local Postgres for engine + dashboard (isolated from other projects on :5432).
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: poly-crypto-postgres
+    environment:
+      POSTGRES_USER: poly
+      POSTGRES_PASSWORD: poly
+      POSTGRES_DB: poly_crypto
+    ports:
+      - "5433:5432"
+    volumes:
+      - poly_crypto_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U poly -d poly_crypto"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+    restart: unless-stopped
+
+volumes:
+  poly_crypto_pgdata:

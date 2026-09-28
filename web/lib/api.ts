@@ -42,8 +42,11 @@ export async function fetchOrders() {
   return r.json();
 }
 
-export async function fetchFills() {
-  const r = await fetch("/api/fills?limit=50", { cache: "no-store" });
+export async function fetchFills(opts?: { limit?: number; slug?: string }) {
+  const q = new URLSearchParams();
+  q.set("limit", String(opts?.limit ?? 50));
+  if (opts?.slug) q.set("slug", opts.slug);
+  const r = await fetch(`/api/fills?${q}`, { cache: "no-store" });
   return r.json();
 }
 

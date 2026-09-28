@@ -31,6 +31,7 @@ pub struct EventRecord {
     pub payload: Value,
 }
 
+#[derive(Clone)]
 pub struct EventLog {
     tx: mpsc::UnboundedSender<EventRecord>,
 }

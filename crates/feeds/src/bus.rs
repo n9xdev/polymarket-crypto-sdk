@@ -48,6 +48,8 @@ pub struct SignalBus {
     pub binance_twap60: LatestSlot<PriceSlot>,
     pub coinbase_spot: LatestSlot<PriceSlot>,
     pub coinbase_twap60: LatestSlot<PriceSlot>,
+    pub coinbase_momentum_pct: LatestSlot<PriceSlot>,
+    pub binance_momentum_pct: LatestSlot<PriceSlot>,
     pub book_up: LatestSlot<Bbo>,
     pub book_down: LatestSlot<Bbo>,
     token_books: RwLock<HashMap<String, Bbo>>,
@@ -123,6 +125,10 @@ impl SignalBus {
             binance_twap60: self.mark_stale(self.binance_twap60.read(), now_ms, STALE_TWAP_MS),
             coinbase_spot: self.mark_stale(self.coinbase_spot.read(), now_ms, STALE_SPOT_MS),
             coinbase_twap60: self.mark_stale(self.coinbase_twap60.read(), now_ms, STALE_TWAP_MS),
+            coinbase_momentum_pct: self
+                .mark_stale(self.coinbase_momentum_pct.read(), now_ms, STALE_SPOT_MS),
+            binance_momentum_pct: self
+                .mark_stale(self.binance_momentum_pct.read(), now_ms, STALE_SPOT_MS),
             up_bbo: up,
             down_bbo: down,
             secs_into_window: secs_into,

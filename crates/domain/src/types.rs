@@ -91,6 +91,13 @@ pub enum Side {
 }
 
 impl Side {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Up => "Up",
+            Self::Down => "Down",
+        }
+    }
+
     pub fn other(self) -> Self {
         match self {
             Self::Up => Self::Down,

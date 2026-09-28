@@ -28,6 +28,10 @@ impl DashboardCtx {
         }
     }
 
+    pub fn record_fill(&self, fill: Value) {
+        *self.last_fill.lock().unwrap() = Some(fill);
+    }
+
     pub fn record_decision(&self, slug: &str, decision: &Decision) {
         let state = strategy_state(decision);
         self.last_decisions.lock().unwrap().insert(
@@ -118,6 +122,15 @@ fn dec(v: Decimal) -> Value {
 
 fn dec_opt(v: Option<Decimal>) -> Value {
     v.map(dec).unwrap_or(Value::Null)
+}
+
+/// Omit missing/stale feed ticks so charts do not plot spurious zeros at startup.
+fn dec_slot(slot: &poly_domain::PriceSlot) -> Value {
+    if slot.valid && !slot.px.is_zero() {
+        dec(slot.px)
+    } else {
+        Value::Null
+    }
 }
 
 pub fn build_snapshot(
@@ -386,12 +399,14 @@ pub fn slot_sample_payload(slug: &str, signal: &Signal, beat: Option<Decimal>) -
     json!({
         "slug": slug,
         "beat": dec_opt(beat.or(signal.beat)),
-        "chainlink_spot": dec(signal.chainlink_spot.px),
-        "chainlink_twap": dec(signal.chainlink_twap.px),
-        "coinbase_spot": dec(signal.coinbase_spot.px),
-        "binance_spot": dec(signal.binance_spot.px),
-        "coinbase_twap60": dec(signal.coinbase_twap60.px),
-        "binance_twap60": dec(signal.binance_twap60.px),
+        "chainlink_spot": dec_slot(&signal.chainlink_spot),
+        "chainlink_twap": dec_slot(&signal.chainlink_twap),
+        "coinbase_spot": dec_slot(&signal.coinbase_spot),
+        "binance_spot": dec_slot(&signal.binance_spot),
+        "coinbase_twap60": dec_slot(&signal.coinbase_twap60),
+        "binance_twap60": dec_slot(&signal.binance_twap60),
+        "coinbase_momentum_pct": dec_slot(&signal.coinbase_momentum_pct),
+        "binance_momentum_pct": dec_slot(&signal.binance_momentum_pct),
         "up_ask": dec(signal.up_bbo.ask),
         "down_ask": dec(signal.down_bbo.ask),
         "stale": {

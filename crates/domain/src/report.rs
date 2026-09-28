@@ -2,6 +2,8 @@ use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
+use crate::types::Side;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReportResult {
     Win,
@@ -24,5 +26,9 @@ pub struct MarketReport {
     /// Dry-run comparison: Up wins if close TWAP strictly above beat.
     pub model_up_wins: Option<bool>,
     pub official_up_won: Option<bool>,
+    pub side: Option<Side>,
+    pub dry_run: bool,
+    pub asset: String,
+    pub timeframe: String,
     pub closed_at: DateTime<Utc>,
 }

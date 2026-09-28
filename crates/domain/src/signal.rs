@@ -38,6 +38,8 @@ pub struct Signal {
     pub binance_twap60: PriceSlot,
     pub coinbase_spot: PriceSlot,
     pub coinbase_twap60: PriceSlot,
+    pub coinbase_momentum_pct: PriceSlot,
+    pub binance_momentum_pct: PriceSlot,
     pub up_bbo: Bbo,
     pub down_bbo: Bbo,
     pub secs_into_window: i64,

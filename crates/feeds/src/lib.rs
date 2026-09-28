@@ -11,4 +11,4 @@ mod local_twap;
 pub use bus::{LatestSlot, SignalBus};
 pub use data_streams::{fetch_twap_at_timestamp, DataStreamsConfig, DataStreamsCredentials};
 pub use hub::FeedHub;
-pub use local_twap::LocalTwap60;
+pub use local_twap::{LocalSpotMetricsConfig, LocalTwap60};

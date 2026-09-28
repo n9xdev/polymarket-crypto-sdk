@@ -10,12 +10,13 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{error, info};
 
 use crate::bus::{price_slot, SignalBus};
-use crate::local_twap::LocalTwap60;
+use crate::local_twap::{LocalSpotMetricsConfig, LocalTwap60};
 
 pub struct CoinbaseConfig {
     pub url: String,
     pub assets: Vec<Asset>,
-    pub twap60: bool,
+    pub local_metrics: bool,
+    pub metrics_cfg: LocalSpotMetricsConfig,
 }
 
 pub async fn run_coinbase(cfg: CoinbaseConfig, bus: Arc<SignalBus>) -> Result<()> {
@@ -52,7 +53,7 @@ async fn run_session(cfg: &CoinbaseConfig, bus: Arc<SignalBus>) -> Result<()> {
         .await?;
     info!(count = product_ids.len(), "coinbase ticker subscribed");
 
-    let mut twap = LocalTwap60::new();
+    let mut twap = LocalTwap60::with_config(cfg.metrics_cfg);
 
     while let Some(msg) = read.next().await {
         let msg = msg?;
@@ -94,10 +95,14 @@ fn handle_ticker(text: &str, cfg: &CoinbaseConfig, bus: &Arc<SignalBus>, twap: &
     };
     let ts_ms = chrono::Utc::now().timestamp_millis();
     bus.coinbase_spot.write(price_slot(px, ts_ms));
-    if cfg.twap60 {
+    if cfg.local_metrics {
         twap.push(px, ts_ms);
-        if let Some((twap_px, twap_ts)) = twap.value() {
+        let (twap_opt, mom_opt) = twap.metrics();
+        if let Some((twap_px, twap_ts)) = twap_opt {
             bus.coinbase_twap60.write(price_slot(twap_px, twap_ts));
+        }
+        if let Some((pct, mom_ts)) = mom_opt {
+            bus.coinbase_momentum_pct.write(price_slot(pct, mom_ts));
         }
     }
 }

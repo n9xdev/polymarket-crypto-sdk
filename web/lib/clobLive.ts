@@ -90,7 +90,7 @@ function applyEvent(
   tokenUp: string,
   tokenDown: string,
   cache: Map<string, LiveBbo>,
-): SideBooks | null {
+): { up: LiveBbo; down: LiveBbo; connected: boolean } | null {
   const eventType = (v.event_type as string) ?? (v.type as string) ?? "";
   const payload = (v.payload as Record<string, unknown>) ?? v;
 
@@ -183,7 +183,12 @@ export function useLiveClobBooks(tokenUp?: string, tokenDown?: string): SideBook
     if (!tokenUp || !tokenDown) {
       askSeriesRef.current = [];
       lastAskSampleMsRef.current = 0;
-      setState({ up: emptyBbo(), down: emptyBbo(), connected: false, askSeries: [] });
+      setState((prev) => {
+        if (!prev.connected && prev.askSeries.length === 0 && !prev.up.valid && !prev.down.valid) {
+          return prev;
+        }
+        return { up: emptyBbo(), down: emptyBbo(), connected: false, askSeries: [] };
+      });
       return;
     }
 

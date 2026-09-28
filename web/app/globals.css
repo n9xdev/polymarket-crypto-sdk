@@ -197,6 +197,20 @@ table.data th {
   font-weight: 500;
 }
 
+.btn-secondary {
+  background: #1a2433;
+  border: 1px solid #2a3848;
+  color: var(--text);
+  padding: 8px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.btn-secondary:hover {
+  border-color: #4da3ff;
+}
+
 .btn-danger {
   background: var(--red);
   color: white;

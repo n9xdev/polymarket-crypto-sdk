@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use poly_config::{ChainlinkSource, ConfigHandle};
-use poly_domain::{Decision, Market};
+use poly_domain::{Decision, Market, Side};
 use poly_exec::{
     alert_kill_switch, alert_stale_feed, spawn_executor_worker, ExecRequest, Executor,
 };
@@ -17,11 +17,22 @@ use poly_settle::{build_report, fetch_outcome_up_won, spawn_redeem_timer};
 use poly_signer::{OrderCache, Presigner};
 use poly_store::{EventKind, EventLog, spawn_writer, PostgresStore};
 use poly_strategy::Strategy;
+use rust_decimal::Decimal;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
+fn parse_fill_side(s: &str) -> Option<Side> {
+    match s {
+        "Up" => Some(Side::Up),
+        "Down" => Some(Side::Down),
+        _ => None,
+    }
+}
+
 use crate::beat::fetch_beat_at_window_open;
 use crate::dashboard::{build_snapshot, slot_sample_payload, DashboardCtx};
+use crate::exec_persist::spawn_exec_persist;
+use crate::report_backfill::backfill_paper_reports;
 use crate::secrets::{load_dotenv, EngineSecrets};
 
 pub struct Engine;
@@ -51,6 +62,7 @@ impl Engine {
         let (event_log, event_rx) = EventLog::new();
         if let Some(ref st) = store {
             spawn_writer(event_rx, st.clone());
+            backfill_paper_reports(st.as_ref(), static_cfg.infra.dry_run).await;
         }
 
         let (life_tx, mut life_rx) = mpsc::unbounded_channel();
@@ -78,7 +90,7 @@ impl Engine {
         hub.spawn_binance(cfg.clone());
 
         let (exec_req_tx, exec_req_rx) = mpsc::unbounded_channel();
-        let (exec_log_tx, _exec_log_rx) = mpsc::unbounded_channel();
+        let (exec_log_tx, exec_log_rx) = mpsc::unbounded_channel();
         let executor = Executor::new(
             static_cfg.infra.clone(),
             secrets.api_key.clone(),
@@ -89,6 +101,16 @@ impl Engine {
         );
         executor.warm_tls().await?;
         spawn_executor_worker(executor.clone(), exec_req_rx);
+
+        let dash_ctx = Arc::new(DashboardCtx::new());
+        if let Some(ref st) = store {
+            spawn_exec_persist(
+                exec_log_rx,
+                st.clone(),
+                dash_ctx.clone(),
+                event_log.clone(),
+            );
+        }
 
         if !static_cfg.infra.dry_run {
             let user_cfg = UserWsConfig {
@@ -119,7 +141,6 @@ impl Engine {
         let mut last_fire_ms: i64 = 0;
         let mut last_slot_sample_ms: HashMap<String, i64> = HashMap::new();
         let mut last_beat_fetch_ms: HashMap<String, i64> = HashMap::new();
-        let dash_ctx = Arc::new(DashboardCtx::new());
         let secrets_for_beat = secrets.clone();
 
         let mut interval = tokio::time::interval(Duration::from_millis(1));
@@ -152,6 +173,15 @@ impl Engine {
                             active_markets.insert(tf_key.clone(), market.clone());
                             fired_slugs.remove(&market.slug.0);
                             strategy.on_market_active(&market);
+                            if let Some(ref st) = store {
+                                let _ = st
+                                    .upsert_market(
+                                        &market.slug.0,
+                                        market.asset.as_str(),
+                                        market.timeframe.as_str(),
+                                    )
+                                    .await;
+                            }
                             info!(slug = %market.slug.0, tf = %tf_key, "market active");
                         }
                         LifecycleEvent::MarketClosed { slug } => {
@@ -165,17 +195,30 @@ impl Engine {
                                 if let Some(m) = active_markets.remove(&key) {
                                     let close_twap = bus.chainlink_twap_60.read().px;
                                     let official = fetch_outcome_up_won(&static_cfg.infra.gamma, &m.slug.0).await.ok().flatten();
+                                    let trade = if let Some(ref st) = store {
+                                        st.primary_fill_for_slug(&m.slug.0).await.ok().flatten()
+                                    } else {
+                                        None
+                                    };
+                                    let (side, signed_px, share_size, fill_fee) = match trade {
+                                        Some((s, px, size, fee)) => {
+                                            (parse_fill_side(&s), Some(px), size, Some(fee))
+                                        }
+                                        None => (None, None, Decimal::ZERO, None),
+                                    };
                                     let report = build_report(
                                         &m,
                                         &m.slug.0,
-                                        None,
-                                        None,
-                                        None,
-                                        static_cfg.execution.size_usd,
+                                        side,
+                                        signed_px,
+                                        signed_px,
+                                        share_size,
                                         Some(close_twap),
                                         Some(bus.chainlink_spot.read().px),
                                         None,
                                         official,
+                                        fill_fee,
+                                        dry_run,
                                     );
                                     if let Some(ref st) = store {
                                         let _ = st.write_report(&report).await;

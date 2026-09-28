@@ -38,7 +38,7 @@ UI sections: Overview, Live market, Price graph, Orders/fills, Market reports, P
 
 API routes include `/api/dashboard`, `/api/series`, `/api/analytics/*`, `/api/events`, `/api/reports/:slug`.
 
-Not yet wired end-to-end (placeholders in UI): wallet balance, order/fill persistence from executor, user-WS status, weekday×hour heatmap, advanced stats (max drawdown, profit factor), chart markers for fills.
+Not yet wired end-to-end (placeholders in UI): wallet balance, live fill ingestion from user WebSocket (paper mode simulates immediate fills in Postgres), user-WS status, weekday×hour heatmap, advanced stats (max drawdown, profit factor), chart markers for fills.
 
 ## Layout
 

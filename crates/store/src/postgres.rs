@@ -9,6 +9,21 @@ pub struct PostgresStore {
     pool: PgPool,
 }
 
+#[derive(Debug, Clone)]
+pub struct ScratchReportFill {
+    pub slug: String,
+    pub asset: String,
+    pub timeframe: String,
+    pub beat: Option<Decimal>,
+    pub close_twap: Option<Decimal>,
+    pub secs_into_window: Option<i32>,
+    pub official_up_won: Option<bool>,
+    pub side: String,
+    pub px: Decimal,
+    pub size: Decimal,
+    pub fee: Decimal,
+}
+
 impl PostgresStore {
     pub async fn connect(url: &str) -> Result<Self> {
         let pool = PgPool::connect(url).await?;
@@ -71,6 +86,122 @@ impl PostgresStore {
         Ok(())
     }
 
+    pub async fn insert_order(
+        &self,
+        slug: &str,
+        side: &str,
+        signed_px: Decimal,
+        size: Decimal,
+        order_type: &str,
+        clob_order_id: Option<&str>,
+        status: &str,
+        raw_resp: Value,
+    ) -> Result<uuid::Uuid> {
+        let row = sqlx::query(
+            r#"
+            INSERT INTO orders (slug, side, signed_px, size, order_type, clob_order_id, status, raw_resp)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            RETURNING id
+            "#,
+        )
+        .bind(slug)
+        .bind(side)
+        .bind(signed_px)
+        .bind(size)
+        .bind(order_type)
+        .bind(clob_order_id)
+        .bind(status)
+        .bind(raw_resp)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.get("id"))
+    }
+
+    pub async fn scratch_reports_with_fills(&self) -> Result<Vec<ScratchReportFill>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT mr.slug,
+                   COALESCE(mr.asset, 'btc') AS asset,
+                   COALESCE(mr.timeframe, '5m') AS timeframe,
+                   mr.beat,
+                   mr.close_twap,
+                   mr.secs_into_window,
+                   mr.official_up_won,
+                   f.side,
+                   f.px,
+                   f.size,
+                   f.fee
+            FROM market_reports mr
+            INNER JOIN fills f ON f.slug = mr.slug
+            WHERE mr.result = 'scratch'
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|r| ScratchReportFill {
+                slug: r.get("slug"),
+                asset: r.get("asset"),
+                timeframe: r.get("timeframe"),
+                beat: r.try_get("beat").ok(),
+                close_twap: r.try_get("close_twap").ok(),
+                secs_into_window: r.try_get("secs_into_window").ok(),
+                official_up_won: r.try_get("official_up_won").ok(),
+                side: r.get("side"),
+                px: r.get("px"),
+                size: r.get("size"),
+                fee: r.get("fee"),
+            })
+            .collect())
+    }
+
+    pub async fn primary_fill_for_slug(
+        &self,
+        slug: &str,
+    ) -> Result<Option<(String, Decimal, Decimal, Decimal)>> {
+        let row = sqlx::query(
+            "SELECT side, px, size, fee FROM fills WHERE slug = $1 ORDER BY ts ASC LIMIT 1",
+        )
+        .bind(slug)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| {
+            (
+                r.get("side"),
+                r.get("px"),
+                r.get("size"),
+                r.get("fee"),
+            )
+        }))
+    }
+
+    pub async fn insert_fill(
+        &self,
+        order_id: uuid::Uuid,
+        slug: &str,
+        side: &str,
+        px: Decimal,
+        size: Decimal,
+        fee: Decimal,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO fills (order_id, slug, side, px, size, fee)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            "#,
+        )
+        .bind(order_id)
+        .bind(slug)
+        .bind(side)
+        .bind(px)
+        .bind(size)
+        .bind(fee)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn write_report(&self, report: &MarketReport) -> Result<()> {
         let result = match report.result {
             ReportResult::Win => "win",
@@ -80,12 +211,22 @@ impl PostgresStore {
         sqlx::query(
             r#"
             INSERT INTO market_reports (slug, result, pnl, fees, fill_vwap, signed_px, beat,
-                close_twap, chainlink_spot_at_fill, secs_into_window, model_up_wins, official_up_won, closed_at)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+                close_twap, chainlink_spot_at_fill, secs_into_window, model_up_wins, official_up_won,
+                side, dry_run, asset, timeframe, closed_at)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
             ON CONFLICT (slug) DO UPDATE SET
                 result = EXCLUDED.result,
                 pnl = EXCLUDED.pnl,
-                fees = EXCLUDED.fees
+                fees = EXCLUDED.fees,
+                fill_vwap = EXCLUDED.fill_vwap,
+                signed_px = EXCLUDED.signed_px,
+                side = EXCLUDED.side,
+                dry_run = EXCLUDED.dry_run,
+                close_twap = EXCLUDED.close_twap,
+                model_up_wins = EXCLUDED.model_up_wins,
+                official_up_won = EXCLUDED.official_up_won,
+                asset = EXCLUDED.asset,
+                timeframe = EXCLUDED timeframe
             "#,
         )
         .bind(&report.slug)
@@ -100,6 +241,10 @@ impl PostgresStore {
         .bind(report.secs_into_window)
         .bind(report.model_up_wins)
         .bind(report.official_up_won)
+        .bind(report.side.map(|s| s.as_str()))
+        .bind(report.dry_run)
+        .bind(&report.asset)
+        .bind(&report.timeframe)
         .bind(report.closed_at)
         .execute(&self.pool)
         .await?;
@@ -216,7 +361,7 @@ impl PostgresStore {
             SELECT ts, payload FROM event_log
             WHERE kind = 'slot_sample'
               AND payload->'data'->>'slug' = $1
-            ORDER BY ts DESC
+            ORDER BY ts ASC
             LIMIT $2
             "#,
         )
@@ -224,7 +369,7 @@ impl PostgresStore {
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;
-        let mut out: Vec<Value> = rows
+        Ok(rows
             .iter()
             .map(|r| {
                 serde_json::json!({
@@ -232,9 +377,7 @@ impl PostgresStore {
                     "point": r.get::<Value, _>("payload").get("data").cloned().unwrap_or(Value::Null),
                 })
             })
-            .collect();
-        out.reverse();
-        Ok(out)
+            .collect())
     }
 
     pub async fn list_reports_filtered(
@@ -244,54 +387,34 @@ impl PostgresStore {
         timeframe: Option<&str>,
         result: Option<&str>,
     ) -> Result<Vec<Value>> {
-        let mut q = String::from(
-            "SELECT slug, asset, timeframe, result, pnl, fees, fill_vwap, signed_px, beat, close_twap,
-                    secs_into_window, side, dry_run, closed_at,
-                    (close_twap - beat) AS twap_minus_beat
-             FROM market_reports WHERE 1=1",
-        );
-        if asset.is_some() {
-            q.push_str(" AND asset = $3");
-        }
-        if timeframe.is_some() {
-            q.push_str(" AND timeframe = $4");
-        }
-        if result.is_some() {
-            q.push_str(" AND result = $5");
-        }
-        q.push_str(" ORDER BY closed_at DESC LIMIT $1");
-
-        // Simpler: use dynamic with optional filters via separate queries
         let rows = sqlx::query(
             r#"
             SELECT slug, COALESCE(asset,'') AS asset, COALESCE(timeframe,'') AS timeframe,
                    result, pnl, fees, fill_vwap, signed_px, beat, close_twap,
                    secs_into_window, side, dry_run, closed_at
             FROM market_reports
+            WHERE ($2::text IS NULL OR lower(COALESCE(NULLIF(asset, ''), split_part(slug, '-', 1))) = lower($2))
+              AND ($3::text IS NULL OR lower(COALESCE(NULLIF(timeframe, ''), split_part(slug, '-', 3))) = lower($3))
+              AND ($4::text IS NULL OR result = $4)
             ORDER BY closed_at DESC
             LIMIT $1
             "#,
         )
         .bind(limit)
+        .bind(asset)
+        .bind(timeframe)
+        .bind(result)
         .fetch_all(&self.pool)
         .await?;
 
         Ok(rows
             .iter()
-            .filter(|r| {
-                asset.is_none_or(|a| {
-                    let col = r.get::<String, _>("asset");
-                    col.is_empty() || col.eq_ignore_ascii_case(a)
-                })
-                    && timeframe.is_none_or(|t| {
-                        let col = r.get::<String, _>("timeframe");
-                        let slug: String = r.get("slug");
-                        col.eq_ignore_ascii_case(t)
-                            || slug.contains(&format!("-updown-{t}-"))
-                    })
-                    && result.is_none_or(|res| r.get::<String, _>("result") == res)
-            })
             .map(|r| {
+                let slug: String = r.get("slug");
+                let asset_col: String = r.get("asset");
+                let tf_col: String = r.get("timeframe");
+                let asset_display = report_asset_from_slug(&slug, &asset_col);
+                let tf_display = report_timeframe_from_slug(&slug, &tf_col);
                 let beat: Option<Decimal> = r.try_get("beat").ok();
                 let close_twap: Option<Decimal> = r.try_get("close_twap").ok();
                 let twap_minus = match (close_twap, beat) {
@@ -299,9 +422,9 @@ impl PostgresStore {
                     _ => None,
                 };
                 serde_json::json!({
-                    "slug": r.get::<String, _>("slug"),
-                    "asset": r.get::<String, _>("asset"),
-                    "timeframe": r.get::<String, _>("timeframe"),
+                    "slug": slug,
+                    "asset": asset_display,
+                    "timeframe": tf_display,
                     "result": r.get::<String, _>("result"),
                     "pnl": r.get::<Decimal, _>("pnl").to_string(),
                     "fees": r.get::<Decimal, _>("fees").to_string(),
@@ -483,4 +606,22 @@ impl PostgresStore {
             })
         }))
     }
+}
+
+/// Slugs are `{asset}-updown-{timeframe}-{epoch}`; older rows may have empty asset/timeframe columns.
+fn report_asset_from_slug(slug: &str, asset_col: &str) -> String {
+    if !asset_col.is_empty() {
+        return asset_col.to_string();
+    }
+    slug.split('-').next().unwrap_or("").to_string()
+}
+
+fn report_timeframe_from_slug(slug: &str, timeframe_col: &str) -> String {
+    if !timeframe_col.is_empty() {
+        return timeframe_col.to_string();
+    }
+    let mut parts = slug.split('-');
+    let _ = parts.next();
+    let _ = parts.next();
+    parts.next().unwrap_or("").to_string()
 }

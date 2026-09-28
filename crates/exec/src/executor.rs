@@ -25,6 +25,13 @@ pub struct ExecResponse {
     pub dry_run: bool,
 }
 
+/// Request + response pair for persistence and dashboard updates.
+#[derive(Debug, Clone)]
+pub struct ExecOutcome {
+    pub req: ExecRequest,
+    pub resp: ExecResponse,
+}
+
 pub struct Executor {
     infra: InfraConfig,
     api_key: String,
@@ -32,7 +39,7 @@ pub struct Executor {
     passphrase: String,
     address: String,
     http: reqwest::Client,
-    tx_log: Option<mpsc::UnboundedSender<ExecResponse>>,
+    tx_log: Option<mpsc::UnboundedSender<ExecOutcome>>,
 }
 
 impl Executor {
@@ -42,7 +49,7 @@ impl Executor {
         api_secret: String,
         passphrase: String,
         address: String,
-        tx_log: Option<mpsc::UnboundedSender<ExecResponse>>,
+        tx_log: Option<mpsc::UnboundedSender<ExecOutcome>>,
     ) -> Arc<Self> {
         Arc::new(Self {
             infra,
@@ -72,14 +79,18 @@ impl Executor {
 
         if self.infra.dry_run {
             info!(slug = %req.slug, body = %body_str, "dry-run POST /order");
+            let slug = req.slug.clone();
             let resp = ExecResponse {
-                slug: req.slug,
+                slug: slug.clone(),
                 success: true,
                 raw: json!({"dryRun": true, "body": body}),
                 dry_run: true,
             };
             if let Some(tx) = &self.tx_log {
-                let _ = tx.send(resp.clone());
+                let _ = tx.send(ExecOutcome {
+                    req,
+                    resp: resp.clone(),
+                });
             }
             return Ok(resp);
         }
@@ -106,14 +117,18 @@ impl Executor {
         if !success {
             warn!(status = %status, raw = %raw, "order post failed");
         }
+        let slug = req.slug.clone();
         let resp = ExecResponse {
-            slug: req.slug,
+            slug: slug.clone(),
             success,
-            raw,
+            raw: raw.clone(),
             dry_run: false,
         };
         if let Some(tx) = &self.tx_log {
-            let _ = tx.send(resp.clone());
+            let _ = tx.send(ExecOutcome {
+                req,
+                resp: resp.clone(),
+            });
         }
         Ok(resp)
     }
@@ -125,8 +140,24 @@ pub fn spawn_executor_worker(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         while let Some(req) = rx.recv().await {
-            if let Err(e) = executor.submit(req).await {
-                warn!(error = %e, "executor submit error");
+            let slug = req.slug.clone();
+            let dry_run = executor.infra.dry_run;
+            match executor.submit(req.clone()).await {
+                Ok(_) => {}
+                Err(e) => {
+                    warn!(error = %e, slug = %slug, "executor submit error");
+                    if let Some(tx) = &executor.tx_log {
+                        let _ = tx.send(ExecOutcome {
+                            req,
+                            resp: ExecResponse {
+                                slug,
+                                success: false,
+                                raw: json!({ "error": e.to_string() }),
+                                dry_run,
+                            },
+                        });
+                    }
+                }
             }
         }
     })

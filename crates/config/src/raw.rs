@@ -62,11 +62,35 @@ fn default_prefer_60() -> u32 {
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
+pub struct RawLocalTwapSettings {
+    #[serde(default = "default_window_60")]
+    pub window_sec: u32,
+    #[serde(default = "default_min_samples")]
+    pub min_samples: u32,
+    #[serde(default = "default_momentum_lookback")]
+    pub momentum_lookback_sec: u32,
+}
+
+fn default_window_60() -> u32 {
+    60
+}
+
+fn default_min_samples() -> u32 {
+    2
+}
+
+fn default_momentum_lookback() -> u32 {
+    30
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
 pub struct RawOptionalFeed {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default = "default_true")]
     pub twap60: bool,
+    #[serde(default)]
+    pub local_twap: RawLocalTwapSettings,
     #[serde(default)]
     pub ws_url: Option<String>,
 }
@@ -176,9 +200,18 @@ pub struct ChainlinkTwapConfig {
 }
 
 #[derive(Debug, Clone)]
+pub struct LocalTwapSettings {
+    pub enabled: bool,
+    pub window_sec: u32,
+    pub min_samples: u32,
+    pub momentum_lookback_sec: u32,
+}
+
+#[derive(Debug, Clone)]
 pub struct OptionalFeedConfig {
     pub enabled: bool,
     pub twap60: bool,
+    pub local_twap: LocalTwapSettings,
     pub ws_url: String,
 }
 
@@ -247,6 +280,20 @@ pub fn parse_chainlink_source(s: &str) -> ChainlinkSource {
     }
 }
 
+fn optional_feed(r: &RawOptionalFeed, default_ws: fn() -> String) -> OptionalFeedConfig {
+    OptionalFeedConfig {
+        enabled: r.enabled,
+        twap60: r.twap60,
+        local_twap: LocalTwapSettings {
+            enabled: r.twap60,
+            window_sec: r.local_twap.window_sec,
+            min_samples: r.local_twap.min_samples,
+            momentum_lookback_sec: r.local_twap.momentum_lookback_sec,
+        },
+        ws_url: r.ws_url.clone().unwrap_or_else(default_ws),
+    }
+}
+
 impl From<RawFeeds> for FeedsConfig {
     fn from(r: RawFeeds) -> Self {
         let chainlink_source = parse_chainlink_source(&r.chainlink_source);
@@ -267,19 +314,8 @@ impl From<RawFeeds> for FeedsConfig {
                 spot_feed_ids: r.chainlink_spot_feed_ids,
                 twap_60_feed_ids: r.chainlink_twap_60_feed_ids,
             },
-            coinbase: OptionalFeedConfig {
-                enabled: r.coinbase.enabled,
-                twap60: r.coinbase.twap60,
-                ws_url: r
-                    .coinbase
-                    .ws_url
-                    .unwrap_or_else(default_coinbase_ws),
-            },
-            binance: OptionalFeedConfig {
-                enabled: r.binance.enabled,
-                twap60: r.binance.twap60,
-                ws_url: r.binance.ws_url.unwrap_or_else(default_binance_ws),
-            },
+            coinbase: optional_feed(&r.coinbase, default_coinbase_ws),
+            binance: optional_feed(&r.binance, default_binance_ws),
         }
     }
 }

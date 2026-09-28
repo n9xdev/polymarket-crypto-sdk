@@ -7,6 +7,7 @@ use tokio::task::JoinHandle;
 use tracing::info;
 
 use crate::binance::{run_binance, BinanceConfig};
+use crate::local_twap::LocalSpotMetricsConfig;
 use crate::bus::SignalBus;
 use crate::clob_book::{run_clob_book_manager, TokenSubscribe};
 use crate::coinbase::{run_coinbase, CoinbaseConfig};
@@ -144,10 +145,22 @@ impl FeedHub {
             .filter_map(|a| Asset::parse(a))
             .collect();
         let url = c.feeds.coinbase.ws_url.clone();
-        let twap60 = c.feeds.coinbase.twap60;
+        let lt = &c.feeds.coinbase.local_twap;
+        let metrics_cfg =
+            LocalSpotMetricsConfig::from_secs(lt.window_sec, lt.min_samples, lt.momentum_lookback_sec);
+        let local_metrics = lt.enabled;
         let bus = self.bus.clone();
         self.handles.push(tokio::spawn(async move {
-            let _ = run_coinbase(CoinbaseConfig { url, assets, twap60 }, bus).await;
+            let _ = run_coinbase(
+                CoinbaseConfig {
+                    url,
+                    assets,
+                    local_metrics,
+                    metrics_cfg,
+                },
+                bus,
+            )
+            .await;
         }));
         info!("spawned Coinbase ticker feed");
     }
@@ -164,14 +177,18 @@ impl FeedHub {
             .filter_map(|a| Asset::parse(a))
             .collect();
         let ws_base = c.feeds.binance.ws_url.clone();
-        let twap60 = c.feeds.binance.twap60;
+        let lt = &c.feeds.binance.local_twap;
+        let metrics_cfg =
+            LocalSpotMetricsConfig::from_secs(lt.window_sec, lt.min_samples, lt.momentum_lookback_sec);
+        let local_metrics = lt.enabled;
         let bus = self.bus.clone();
         self.handles.push(tokio::spawn(async move {
             let _ = run_binance(
                 BinanceConfig {
                     ws_base,
                     assets,
-                    twap60,
+                    local_metrics,
+                    metrics_cfg,
                 },
                 bus,
             )

@@ -1,5 +1,7 @@
 mod beat;
 mod dashboard;
+mod exec_persist;
+mod report_backfill;
 mod run;
 mod secrets;
 

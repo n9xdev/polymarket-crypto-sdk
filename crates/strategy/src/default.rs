@@ -146,6 +146,8 @@ mod tests {
             binance_twap60: PriceSlot::default(),
             coinbase_spot: PriceSlot::default(),
             coinbase_twap60: PriceSlot::default(),
+            coinbase_momentum_pct: PriceSlot::default(),
+            binance_momentum_pct: PriceSlot::default(),
             up_bbo: Bbo {
                 bid: dec!(0.94),
                 ask: dec!(0.96),

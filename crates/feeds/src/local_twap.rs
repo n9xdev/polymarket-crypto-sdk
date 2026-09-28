@@ -3,23 +3,50 @@ use std::collections::VecDeque;
 use chrono::Utc;
 use rust_decimal::Decimal;
 
+#[derive(Debug, Clone, Copy)]
+pub struct LocalSpotMetricsConfig {
+    pub window_ms: i64,
+    pub min_samples: usize,
+    pub momentum_lookback_ms: i64,
+}
+
+impl LocalSpotMetricsConfig {
+    pub fn from_secs(window_sec: u32, min_samples: u32, momentum_lookback_sec: u32) -> Self {
+        Self {
+            window_ms: i64::from(window_sec) * 1000,
+            min_samples: min_samples.max(1) as usize,
+            momentum_lookback_ms: i64::from(momentum_lookback_sec) * 1000,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Sample {
     ts_ms: i64,
     px: Decimal,
 }
 
-/// Rolling 60s time-weighted average (local, not settlement).
-#[derive(Debug, Default)]
+/// Rolling local TWAP plus % momentum over a lookback window (from ticker stream).
+#[derive(Debug)]
 pub struct LocalTwap60 {
-    window_ms: i64,
+    cfg: LocalSpotMetricsConfig,
     samples: VecDeque<Sample>,
+}
+
+impl Default for LocalTwap60 {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl LocalTwap60 {
     pub fn new() -> Self {
+        Self::with_config(LocalSpotMetricsConfig::from_secs(60, 2, 30))
+    }
+
+    pub fn with_config(cfg: LocalSpotMetricsConfig) -> Self {
         Self {
-            window_ms: 60_000,
+            cfg,
             samples: VecDeque::new(),
         }
     }
@@ -30,7 +57,7 @@ impl LocalTwap60 {
     }
 
     fn evict(&mut self, now_ms: i64) {
-        let cutoff = now_ms - self.window_ms;
+        let cutoff = now_ms - self.cfg.window_ms;
         while self
             .samples
             .front()
@@ -40,10 +67,18 @@ impl LocalTwap60 {
         }
     }
 
-    pub fn value(&mut self) -> Option<(Decimal, i64)> {
-        let now_ms = Utc::now().timestamp_millis();
+    /// Time-weighted average over `window_ms` and % change vs price at `now - momentum_lookback_ms`.
+    pub fn metrics(&mut self) -> (Option<(Decimal, i64)>, Option<(Decimal, i64)>) {
+        self.metrics_at(Utc::now().timestamp_millis())
+    }
+
+    pub fn metrics_at(&mut self, now_ms: i64) -> (Option<(Decimal, i64)>, Option<(Decimal, i64)>) {
         self.evict(now_ms);
-        if self.samples.len() < 2 {
+        (self.twap(now_ms), self.momentum_pct(now_ms))
+    }
+
+    fn twap(&self, now_ms: i64) -> Option<(Decimal, i64)> {
+        if self.samples.len() < self.cfg.min_samples {
             return self.samples.back().map(|s| (s.px, s.ts_ms));
         }
         let mut weighted = Decimal::ZERO;
@@ -60,5 +95,51 @@ impl LocalTwap60 {
             return samples.last().map(|s| (s.px, s.ts_ms));
         }
         Some((weighted / duration, now_ms))
+    }
+
+    fn momentum_pct(&self, now_ms: i64) -> Option<(Decimal, i64)> {
+        let current = self.samples.back()?;
+        if current.px <= Decimal::ZERO {
+            return None;
+        }
+        let target_ts = now_ms - self.cfg.momentum_lookback_ms;
+        let ref_px = self.price_at_or_before(target_ts)?;
+        if ref_px <= Decimal::ZERO {
+            return None;
+        }
+        let hundred = Decimal::from(100);
+        let pct = (current.px - ref_px) / ref_px * hundred;
+        Some((pct, now_ms))
+    }
+
+    /// Latest sample at or before `ts_ms`.
+    fn price_at_or_before(&self, ts_ms: i64) -> Option<Decimal> {
+        self.samples
+            .iter()
+            .rev()
+            .find(|s| s.ts_ms <= ts_ms)
+            .map(|s| s.px)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    fn d(s: &str) -> Decimal {
+        Decimal::from_str(s).unwrap()
+    }
+
+    #[test]
+    fn momentum_pct_over_lookback() {
+        let cfg = LocalSpotMetricsConfig::from_secs(60, 1, 10);
+        let mut m = LocalTwap60::with_config(cfg);
+        m.push(d("100"), 0);
+        m.push(d("101"), 5_000);
+        m.push(d("102"), 10_000);
+        let (_, mom) = m.metrics_at(10_000);
+        let (pct, _) = mom.expect("momentum");
+        assert_eq!(pct, d("2"));
     }
 }

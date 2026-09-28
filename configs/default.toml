@@ -1,6 +1,6 @@
 [market]
 assets = ["btc"]
-timeframes = ["5m", "15m"]
+timeframes = ["5m"]
 slug_tpl = "{asset}-updown-{tf}-{window_start}"
 
 [feeds]
@@ -27,10 +27,20 @@ enabled = true
 twap60 = true
 # ws_url = "wss://ws-feed.exchange.coinbase.com"
 
+[feeds.coinbase.local_twap]
+window_sec = 60
+min_samples = 2
+momentum_lookback_sec = 30
+
 [feeds.binance]
-enabled = true
-twap60 = true
+enabled = false
+twap60 = false
 # ws_url = "wss://stream.binance.com:9443"
+
+[feeds.binance.local_twap]
+window_sec = 60
+min_samples = 2
+momentum_lookback_sec = 30
 
 [execution]
 order_type = "FAK"
@@ -42,9 +52,9 @@ grid_step = 0.01
 
 [strategy]
 name = "default"
-entry_after_sec = 240
-best_ask_min = 0.95
-twap_beat_diff_usd = 2.0
+entry_after_sec = 20
+best_ask_min = 0.60
+twap_beat_diff_usd = 0.0
 max_orders_per_market = 1
 cooldown_ms = 250
 

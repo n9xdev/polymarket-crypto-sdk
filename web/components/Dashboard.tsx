@@ -1,10 +1,12 @@
 "use client";
 
 import clsx from "clsx";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import {
   Line,
   LineChart,
+  ComposedChart,
+  Scatter,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -14,6 +16,7 @@ import {
   Bar,
   Cell,
   Legend,
+  ReferenceLine,
 } from "recharts";
 import { useLiveClobBooks } from "../lib/clobLive";
 import { viewSnapshot, pickWindow } from "../lib/view";
@@ -74,6 +77,7 @@ export default function Dashboard() {
   const [reportTf, setReportTf] = useState("");
   const [reportResult, setReportResult] = useState("");
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
+  const [chartFills, setChartFills] = useState<Record<string, unknown>[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [killMsg, setKillMsg] = useState<string | null>(null);
 
@@ -118,6 +122,12 @@ export default function Dashboard() {
   }, [tab, reportAsset, reportTf, reportResult]);
 
   const seriesSlug = selectedSlug ?? slug;
+  const viewingPastWindow = Boolean(selectedSlug && slug && selectedSlug !== slug);
+
+  const openCurrentPriceGraph = useCallback(() => {
+    setSelectedSlug(null);
+    setTab("chart");
+  }, []);
 
   const loadSeries = useCallback(() => {
     if (!seriesSlug) {
@@ -138,6 +148,19 @@ export default function Dashboard() {
     return () => clearInterval(t);
   }, [tab, loadSeries]);
 
+  useEffect(() => {
+    if (tab !== "chart" || !seriesSlug) {
+      setChartFills([]);
+      return;
+    }
+    const load = () => {
+      fetchFills({ slug: seriesSlug, limit: 20 }).then((r) => setChartFills(r.fills ?? []));
+    };
+    load();
+    const t = setInterval(load, 5000);
+    return () => clearInterval(t);
+  }, [tab, seriesSlug]);
+
   async function onKill() {
     if (!window.confirm("Activate kill switch? Engine will stop new orders.")) return;
     try {
@@ -150,18 +173,27 @@ export default function Dashboard() {
   }
 
   const chartData = useMemo(() => {
-    const fromSeries = series.map((p) => {
-      const pt = (p.point ?? {}) as Record<string, string>;
-      const ts = String(p.ts ?? "");
-      return {
-        t: ts.slice(11, 19),
-        beat: num(pt.beat),
-        spot: num(pt.chainlink_spot),
-        twap: num(pt.chainlink_twap),
-        coinbase: num(pt.coinbase_spot),
-        binance: num(pt.binance_spot),
-      };
-    });
+    const fromSeries = dedupeChartBySecond(
+      series.map((p) => {
+        const pt = (p.point ?? {}) as Record<string, string>;
+        const ts = String(p.ts ?? "");
+        const xMs = Date.parse(ts);
+        return {
+          t: ts.slice(11, 19),
+          xMs: Number.isFinite(xMs) ? xMs : 0,
+          tsIso: ts,
+          beat: chartPrice(pt.beat),
+          spot: chartPrice(pt.chainlink_spot),
+          twap: chartPrice(pt.chainlink_twap),
+          coinbase: chartPrice(pt.coinbase_spot),
+          binance: chartPrice(pt.binance_spot),
+          coinbaseTwap: chartPrice(pt.coinbase_twap60),
+          binanceTwap: chartPrice(pt.binance_twap60),
+          coinbaseMom: chartPct(pt.coinbase_momentum_pct),
+          binanceMom: chartPct(pt.binance_momentum_pct),
+        };
+      }),
+    );
     if (fromSeries.length > 0) return fromSeries;
 
     const sig = (snap.signal ?? {}) as Record<string, unknown>;
@@ -173,17 +205,26 @@ export default function Dashboard() {
     const beat = sig.beat ?? (snap.current_market as Record<string, unknown> | undefined)?.beat;
     if (!clSpot && !clTwap && !beat) return [];
 
+    const nowIso = new Date().toISOString();
+    const xMs = Date.parse(nowIso);
     return [
       {
-        t: new Date().toISOString().slice(11, 19),
-        beat: num(String(beat ?? "")),
-        spot: num(String(clSpot ?? "")),
-        twap: num(String(clTwap ?? "")),
-        coinbase: num(String(cb ?? "")),
-        binance: num(String(bn ?? "")),
+        t: nowIso.slice(11, 19),
+        xMs: Number.isFinite(xMs) ? xMs : 0,
+        tsIso: nowIso,
+        beat: chartPrice(String(beat ?? "")),
+        spot: chartPrice(String(clSpot ?? "")),
+        twap: chartPrice(String(clTwap ?? "")),
+        coinbase: chartPrice(String(cb ?? "")),
+        binance: chartPrice(String(bn ?? "")),
       },
     ];
   }, [series, snap]);
+
+  const fillMarkers = useMemo(
+    () => buildFillMarkers(chartData, chartFills),
+    [chartData, chartFills],
+  );
 
   const engineState = String(snap.engine_state ?? "unknown");
   const dryRun = Boolean(snap.dry_run);
@@ -233,9 +274,31 @@ export default function Dashboard() {
           />
         )}
 
-        {tab === "overview" && <Overview data={data} snap={snap} rawSnap={rawSnap} viewTf={viewTf} onKill={onKill} />}
-        {tab === "live" && <LiveMarket snap={snap} viewTf={viewTf} />}
-        {tab === "chart" && <PriceChart chartData={chartData} slug={selectedSlug ?? slug} />}
+        {tab === "overview" && (
+          <Overview
+            data={data}
+            snap={snap}
+            rawSnap={rawSnap}
+            viewTf={viewTf}
+            onKill={onKill}
+            onOpenPriceGraph={openCurrentPriceGraph}
+            canOpenPriceGraph={viewActive && Boolean(slug)}
+          />
+        )}
+        {tab === "live" && (
+          <LiveMarket snap={snap} viewTf={viewTf} onOpenPriceGraph={openCurrentPriceGraph} />
+        )}
+        {tab === "chart" && (
+          <PriceChart
+            chartData={chartData}
+            slug={seriesSlug}
+            currentSlug={slug}
+            viewingPast={viewingPastWindow}
+            fillMarkers={fillMarkers}
+            fillsLoadedForSlug={chartFills.length}
+            onViewCurrent={openCurrentPriceGraph}
+          />
+        )}
         {tab === "positions" && <Positions orders={orders} fills={fills} snap={snap} />}
         {tab === "reports" && (
           <ReportsTable reports={reports} onSelect={(s) => { setSelectedSlug(s); setTab("chart"); }} />
@@ -312,12 +375,16 @@ function Overview({
   rawSnap,
   viewTf,
   onKill,
+  onOpenPriceGraph,
+  canOpenPriceGraph,
 }: {
   data: DashboardPayload | null;
   snap: Record<string, unknown>;
   rawSnap: Record<string, unknown>;
   viewTf: string;
   onKill: () => void;
+  onOpenPriceGraph: () => void;
+  canOpenPriceGraph: boolean;
 }) {
   const other = viewTf === "5m" ? "15m" : "5m";
   const otherWin = pickWindow(rawSnap, other);
@@ -359,6 +426,11 @@ function Overview({
           {otherWin?.active && (
             <p className="metric-label">Also live: {String((otherWin.market as Record<string, unknown>)?.slug ?? other)}</p>
           )}
+          {canOpenPriceGraph && (
+            <button type="button" className="btn-secondary" style={{ marginTop: 16, marginRight: 8 }} onClick={onOpenPriceGraph}>
+              View price graph (current window)
+            </button>
+          )}
           <button type="button" className="btn-danger" style={{ marginTop: 16 }} onClick={onKill}>
             Activate kill switch
           </button>
@@ -380,7 +452,9 @@ function useMarketTokens(
 
   useEffect(() => {
     if (tokenUp && tokenDown) {
-      setResolved({ tokenUp, tokenDown });
+      setResolved((prev) =>
+        prev.tokenUp === tokenUp && prev.tokenDown === tokenDown ? prev : { tokenUp, tokenDown },
+      );
       return;
     }
     if (!slug) return;
@@ -433,14 +507,14 @@ function useMarketTokens(
 function LiveMarket({
   snap,
   viewTf,
+  onOpenPriceGraph,
 }: {
   snap: Record<string, unknown>;
   viewTf: string;
+  onOpenPriceGraph: () => void;
 }) {
-  if (!snap.view_active) {
-    return <p className="empty">No active {viewTf} window.</p>;
-  }
-  const market = snap.current_market as Record<string, unknown> | undefined;
+  const viewActive = Boolean(snap.view_active);
+  const market = viewActive ? (snap.current_market as Record<string, unknown> | undefined) : undefined;
   const strat = (snap.strategy ?? {}) as Record<string, unknown>;
   const signal = (snap.signal ?? {}) as Record<string, unknown>;
   const resolvedTokens = useMarketTokens(
@@ -448,11 +522,18 @@ function LiveMarket({
     market?.token_up as string | undefined,
     market?.token_down as string | undefined,
   );
-  const live = useLiveClobBooks(resolvedTokens.tokenUp, resolvedTokens.tokenDown);
+  const live = useLiveClobBooks(
+    viewActive ? resolvedTokens.tokenUp : undefined,
+    viewActive ? resolvedTokens.tokenDown : undefined,
+  );
   const upFallback = (signal.up_bbo ?? {}) as Record<string, unknown>;
   const downFallback = (signal.down_bbo ?? {}) as Record<string, unknown>;
   const up = live.up.valid ? live.up : upFallback;
   const down = live.down.valid ? live.down : downFallback;
+
+  if (!viewActive) {
+    return <p className="empty">No active {viewTf} window.</p>;
+  }
 
   return (
     <div className="grid-2">
@@ -464,6 +545,9 @@ function LiveMarket({
         <p>TWAP − beat: {String(strat.twap_minus_beat ?? "—")} (threshold {String(strat.twap_beat_diff_usd ?? "—")})</p>
         <p>Best ask &gt; min: {String(strat.best_ask_ok ?? "—")}</p>
         <p>Last decision: {JSON.stringify(snap.last_decision ?? null)}</p>
+        <button type="button" className="btn-secondary" style={{ marginTop: 12 }} onClick={onOpenPriceGraph}>
+          View BTC price graph (this window)
+        </button>
       </div>
       <div className="card">
         <h3>Books & prices</h3>
@@ -484,19 +568,23 @@ function LiveMarket({
   );
 }
 
-function LiveAskChart({ data }: { data: { t: string; upAsk?: number; downAsk?: number }[] }) {
+const LiveAskChart = memo(function LiveAskChart({
+  data,
+}: {
+  data: { t: string; upAsk?: number; downAsk?: number }[];
+}) {
   if (!data.length) {
     return <p className="empty">Waiting for CLOB ask updates…</p>;
   }
   return (
-    <ResponsiveContainer width="100%" height="100%">
+    <ResponsiveContainer width="100%" height={220} debounce={50}>
       <LineChart data={data}>
         <CartesianGrid stroke="#1e2836" strokeDasharray="3 3" />
         <XAxis dataKey="t" stroke="#8b9cb3" fontSize={11} minTickGap={28} />
         <YAxis stroke="#8b9cb3" fontSize={11} domain={[0, 1]} tickFormatter={(v) => Number(v).toFixed(2)} />
         <Tooltip
           contentStyle={{ background: "#121820", border: "1px solid #1e2836" }}
-          formatter={(v: number) => v.toFixed(4)}
+          formatter={(v) => (typeof v === "number" ? v.toFixed(4) : String(v ?? ""))}
         />
         <Legend />
         <Line type="monotone" dataKey="upAsk" name="Up ask" stroke="#f5a524" dot={false} strokeWidth={1.5} />
@@ -504,46 +592,169 @@ function LiveAskChart({ data }: { data: { t: string; upAsk?: number; downAsk?: n
       </LineChart>
     </ResponsiveContainer>
   );
-}
+});
+
+type ChartPoint = {
+  t: string;
+  xMs: number;
+  tsIso?: string;
+  beat?: number;
+  spot?: number;
+  twap?: number;
+  coinbase?: number;
+  binance?: number;
+  coinbaseTwap?: number;
+  binanceTwap?: number;
+  coinbaseMom?: number;
+  binanceMom?: number;
+};
+
+type FillMarker = { xMs: number; markY: number; label: string; t: string };
 
 function PriceChart({
   chartData,
   slug,
+  currentSlug,
+  viewingPast,
+  fillMarkers,
+  fillsLoadedForSlug,
+  onViewCurrent,
 }: {
-  chartData: { t: string; beat?: number; spot?: number; twap?: number; coinbase?: number; binance?: number }[];
+  chartData: ChartPoint[];
   slug: string;
+  currentSlug: string;
+  viewingPast: boolean;
+  fillMarkers: FillMarker[];
+  /** Raw fill rows for this slug (0 = none in DB for this window). */
+  fillsLoadedForSlug: number;
+  onViewCurrent: () => void;
 }) {
-  const hasCb = chartData.some((p) => (p.coinbase ?? 0) > 0);
-  const hasBn = chartData.some((p) => (p.binance ?? 0) > 0);
+  const hasCb = chartData.some((p) => p.coinbase != null);
+  const hasBn = chartData.some((p) => p.binance != null);
+  const hasCbTwap = chartData.some((p) => p.coinbaseTwap != null);
+  const hasBnTwap = chartData.some((p) => p.binanceTwap != null);
+  const hasMom =
+    chartData.some((p) => p.coinbaseMom != null) || chartData.some((p) => p.binanceMom != null);
+  const isLiveWindow = Boolean(currentSlug && slug === currentSlug);
   return (
     <div className="card">
-      <h3>Live window · {slug || "—"}</h3>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center", marginBottom: 8 }}>
+        <h3 style={{ margin: 0 }}>
+          {isLiveWindow ? "Live window" : "Past window"} · {slug || "—"}
+        </h3>
+        {viewingPast && currentSlug && (
+          <button type="button" className="btn-secondary" onClick={onViewCurrent}>
+            Back to current market ({currentSlug})
+          </button>
+        )}
+        {!isLiveWindow && currentSlug && !viewingPast && slug && (
+          <button type="button" className="btn-secondary" onClick={onViewCurrent}>
+            Jump to current market
+          </button>
+        )}
+      </div>
       <p className="metric-label" style={{ marginBottom: 12 }}>
-        BTC USD: Chainlink beat / spot / TWAP plus optional Coinbase &amp; Binance spot (1 Hz slot samples). CLOB asks on Live market.
+        BTC USD: Chainlink beat / spot / TWAP; Coinbase &amp; Binance spot + local TWAP-60; momentum = % change over configured N sec (1 Hz samples).
+        {fillMarkers.length > 0 && " Orange markers = fills (purchase time on CL spot)."}
+        {" "}CLOB Up/Down asks are on Live market. Paper (dry-run) fills are stored the same way as live.
       </p>
+      {chartData.length > 0 && fillsLoadedForSlug === 0 && (
+        <p className="empty" style={{ marginBottom: 12 }}>
+          No purchase recorded for this window — the strategy did not fill here (check Orders &amp; fills for other slugs).
+        </p>
+      )}
       {chartData.length === 0 ? (
         <p className="empty">No samples yet — engine writes 1Hz slot samples when a market is active.</p>
       ) : (
-        <div className="chart-wrap">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={chartData}>
-              <CartesianGrid stroke="#1e2836" strokeDasharray="3 3" />
-              <XAxis dataKey="t" stroke="#8b9cb3" fontSize={11} />
-              <YAxis stroke="#8b9cb3" fontSize={11} domain={["auto", "auto"]} />
-              <Tooltip contentStyle={{ background: "#121820", border: "1px solid #1e2836" }} />
-              <Legend />
-              <Line type="monotone" dataKey="beat" name="Beat" stroke="#7c5cff" dot={false} strokeWidth={2} />
-              <Line type="monotone" dataKey="spot" name="CL spot" stroke="#4da3ff" dot={false} strokeWidth={1.5} />
-              <Line type="monotone" dataKey="twap" name="CL TWAP" stroke="#3dd68c" dot={false} strokeWidth={1.5} />
-              {hasCb && (
-                <Line type="monotone" dataKey="coinbase" name="Coinbase" stroke="#f7931a" dot={false} strokeWidth={1.5} />
-              )}
-              {hasBn && (
-                <Line type="monotone" dataKey="binance" name="Binance" stroke="#f0b90b" dot={false} strokeWidth={1.5} strokeDasharray="4 2" />
-              )}
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
+        <>
+          <div className="chart-wrap">
+            <ResponsiveContainer width="100%" height="100%">
+              <ComposedChart data={chartData}>
+                <CartesianGrid stroke="#1e2836" strokeDasharray="3 3" />
+                <XAxis
+                  dataKey="xMs"
+                  type="number"
+                  domain={["dataMin", "dataMax"]}
+                  stroke="#8b9cb3"
+                  fontSize={11}
+                  tickFormatter={(ms) => formatChartTickMs(Number(ms))}
+                />
+                <YAxis stroke="#8b9cb3" fontSize={11} domain={["auto", "auto"]} />
+                <Tooltip
+                  contentStyle={{ background: "#121820", border: "1px solid #1e2836" }}
+                  labelFormatter={(ms) => formatChartTickMs(Number(ms))}
+                />
+                <Legend />
+                <Line type="monotone" dataKey="beat" name="Beat" stroke="#7c5cff" dot={false} connectNulls={false} strokeWidth={2} />
+                <Line type="monotone" dataKey="spot" name="CL spot" stroke="#4da3ff" dot={false} connectNulls={false} strokeWidth={1.5} />
+                <Line type="monotone" dataKey="twap" name="CL TWAP" stroke="#3dd68c" dot={false} connectNulls={false} strokeWidth={1.5} />
+                {hasCb && (
+                  <Line type="monotone" dataKey="coinbase" name="CB spot" stroke="#f7931a" dot={false} connectNulls={false} strokeWidth={1.5} />
+                )}
+                {hasBn && (
+                  <Line type="monotone" dataKey="binance" name="BN spot" stroke="#f0b90b" dot={false} connectNulls={false} strokeWidth={1.5} strokeDasharray="4 2" />
+                )}
+                {hasCbTwap && (
+                  <Line type="monotone" dataKey="coinbaseTwap" name="CB TWAP60" stroke="#ffb347" dot={false} connectNulls={false} strokeWidth={1.25} strokeDasharray="2 2" />
+                )}
+                {hasBnTwap && (
+                  <Line type="monotone" dataKey="binanceTwap" name="BN TWAP60" stroke="#ffe066" dot={false} connectNulls={false} strokeWidth={1.25} strokeDasharray="2 2" />
+                )}
+                {fillMarkers.length > 0 && (
+                  <Scatter
+                    data={fillMarkers}
+                    dataKey="markY"
+                    name="Purchase"
+                    fill="#f5a524"
+                    legendType="circle"
+                    isAnimationActive={false}
+                    shape={FillMarkShape}
+                  />
+                )}
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+          {hasMom && (
+            <div className="chart-wrap" style={{ height: 160, marginTop: 16 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={chartData}>
+                  <CartesianGrid stroke="#1e2836" strokeDasharray="3 3" />
+                  <XAxis
+                    dataKey="xMs"
+                    type="number"
+                    domain={["dataMin", "dataMax"]}
+                    stroke="#8b9cb3"
+                    fontSize={11}
+                    tickFormatter={(ms) => formatChartTickMs(Number(ms))}
+                  />
+                  <YAxis stroke="#8b9cb3" fontSize={11} domain={["auto", "auto"]} tickFormatter={(v) => `${v}%`} />
+                  <Tooltip
+                    contentStyle={{ background: "#121820", border: "1px solid #1e2836" }}
+                    labelFormatter={(ms) => formatChartTickMs(Number(ms))}
+                    formatter={(v: number) => [`${Number(v).toFixed(3)}%`, ""]}
+                  />
+                  <Legend />
+                  <ReferenceLine y={0} stroke="#8b9cb3" strokeDasharray="3 3" />
+                  {chartData.some((p) => p.coinbaseMom != null) && (
+                    <Line type="monotone" dataKey="coinbaseMom" name="CB momentum" stroke="#f7931a" dot={false} connectNulls={false} strokeWidth={1.5} />
+                  )}
+                  {chartData.some((p) => p.binanceMom != null) && (
+                    <Line type="monotone" dataKey="binanceMom" name="BN momentum" stroke="#f0b90b" dot={false} connectNulls={false} strokeWidth={1.5} strokeDasharray="4 2" />
+                  )}
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+          {fillMarkers.length > 0 && (
+            <ul className="metric-label" style={{ marginTop: 12, paddingLeft: 18 }}>
+              {fillMarkers.map((m) => (
+                <li key={`${m.xMs}-${m.label}`}>
+                  Purchase {m.t} — {m.label} (on CL spot line)
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
       )}
     </div>
   );
@@ -564,8 +775,8 @@ function Positions({
   return (
     <div className="grid-2">
       <div className="card">
-        <h3>Working orders</h3>
-        {orders.length === 0 ? <p className="empty">No orders in DB (live POST not persisted yet).</p> : (
+        <h3>Orders</h3>
+        {orders.length === 0 ? <p className="empty">No orders yet — they appear here when the strategy fires.</p> : (
           <DataTable
             columns={["slug", "side", "signed_px", "size", "order_type", "status"]}
             rows={orders}
@@ -574,7 +785,7 @@ function Positions({
       </div>
       <div className="card">
         <h3>Fills</h3>
-        {fills.length === 0 ? <p className="empty">No fills recorded yet.</p> : (
+        {fills.length === 0 ? <p className="empty">No fills yet.</p> : (
           <DataTable columns={["slug", "side", "px", "size", "fee", "ts"]} rows={fills} />
         )}
         <h3 style={{ marginTop: 20 }}>Presign cache</h3>
@@ -605,8 +816,8 @@ function ReportsTable({
             <tr>
               <th>Slug</th>
               <th>Result</th>
-              <th>PnL</th>
-              <th>Net</th>
+              <th>Paper PnL</th>
+              <th>Paper net</th>
               <th>Beat</th>
               <th>TWAP−beat</th>
               <th>Dry</th>
@@ -615,7 +826,10 @@ function ReportsTable({
           <tbody>
             {reports.map((r) => (
               <tr key={String(r.slug)} style={{ cursor: "pointer" }} onClick={() => onSelect(String(r.slug))}>
-                <td>{String(r.slug)}</td>
+                <td>
+                  {String(r.slug)}
+                  <span className="metric-label" style={{ marginLeft: 8 }}>→ price graph</span>
+                </td>
                 <td>{String(r.result)}</td>
                 <td>{String(r.pnl)}</td>
                 <td>{String(r.net)}</td>
@@ -891,6 +1105,95 @@ function DataTable({ columns, rows }: { columns: string[]; rows: Record<string, 
   );
 }
 
+function clockLabelFromTs(raw: unknown): string {
+  if (raw == null) return "";
+  if (typeof raw === "string") {
+    if (raw.includes("T")) return raw.slice(11, 19);
+    return raw.length >= 19 ? raw.slice(11, 19) : raw.slice(0, 8);
+  }
+  const ms = Date.parse(String(raw));
+  if (Number.isFinite(ms)) return new Date(ms).toISOString().slice(11, 19);
+  return "";
+}
+
+function tsToMs(raw: unknown): number {
+  if (raw == null) return NaN;
+  if (typeof raw === "number") return raw;
+  return Date.parse(String(raw));
+}
+
+function formatChartTickMs(ms: number): string {
+  if (!Number.isFinite(ms)) return "";
+  return new Date(ms).toISOString().slice(11, 19);
+}
+
+function dedupeChartBySecond(rows: ChartPoint[]): ChartPoint[] {
+  const bySecond = new Map<string, ChartPoint>();
+  for (const r of rows) {
+    if (!r.t) continue;
+    bySecond.set(r.t, r);
+  }
+  return [...bySecond.values()].sort((a, b) => a.xMs - b.xMs);
+}
+
+function FillMarkShape(props: {
+  cx?: number;
+  cy?: number;
+  payload?: { label?: string };
+}) {
+  const { cx, cy, payload } = props;
+  if (cx == null || cy == null) return null;
+  const label = payload?.label ?? "Fill";
+  return (
+    <g>
+      <line x1={cx} y1={cy} x2={cx} y2={Math.max(8, cy - 36)} stroke="#f5a524" strokeWidth={2} strokeDasharray="5 3" />
+      <circle cx={cx} cy={cy} r={7} fill="#f5a524" stroke="#1a1208" strokeWidth={2} />
+      <text x={cx} y={Math.max(4, cy - 40)} fill="#f5a524" fontSize={11} textAnchor="middle">
+        {label}
+      </text>
+    </g>
+  );
+}
+
+function nearestChartPointByMs(chartData: ChartPoint[], xMs: number): ChartPoint | undefined {
+  if (!chartData.length || !Number.isFinite(xMs)) return undefined;
+  let best = chartData[0];
+  let bestDiff = Math.abs(best.xMs - xMs);
+  for (const p of chartData) {
+    const d = Math.abs(p.xMs - xMs);
+    if (d < bestDiff) {
+      best = p;
+      bestDiff = d;
+    }
+  }
+  return best;
+}
+
+function buildFillMarkers(chartData: ChartPoint[], fills: Record<string, unknown>[]): FillMarker[] {
+  if (!chartData.length || !fills.length) return [];
+  return fills
+    .map((f) => {
+      const xMs = tsToMs(f.ts);
+      if (!Number.isFinite(xMs)) return null;
+      const clock = clockLabelFromTs(f.ts);
+      const pt =
+        chartData.find((p) => p.t === clock) ??
+        chartData.find((p) => Math.abs(p.xMs - xMs) < 1500) ??
+        nearestChartPointByMs(chartData, xMs);
+      const markY = pt?.spot ?? pt?.twap ?? pt?.beat ?? pt?.coinbase;
+      if (markY == null) return null;
+      const side = String(f.side ?? "?");
+      const px = String(f.px ?? "—");
+      return {
+        xMs,
+        markY,
+        t: clock || formatChartTickMs(xMs),
+        label: `${side} @ ${px}`,
+      };
+    })
+    .filter((m): m is FillMarker => m != null);
+}
+
 function pct(v?: number) {
   if (v == null) return "—";
   return `${(v * 100).toFixed(1)}%`;
@@ -900,6 +1203,24 @@ function num(v?: string) {
   if (!v) return undefined;
   const n = parseFloat(v);
   return Number.isFinite(n) ? n : undefined;
+}
+
+/** Momentum series: stored as percent (e.g. 0.15 = 0.15%). */
+function chartPct(v?: string) {
+  if (v == null || v === "" || v === "null") return undefined;
+  const n = parseFloat(v);
+  if (!Number.isFinite(n)) return undefined;
+  return n;
+}
+
+/** BTC USD chart: skip null/0/garbage so Recharts does not spike to the axis. */
+function chartPrice(v?: string) {
+  if (v == null || v === "" || v === "null") return undefined;
+  const n = parseFloat(v);
+  if (!Number.isFinite(n) || n <= 0) return undefined;
+  // Crypto up/down windows use ~80k BTC; reject obvious placeholder zeros.
+  if (n < 1000) return undefined;
+  return n;
 }
 
 function formatAge(age: unknown) {

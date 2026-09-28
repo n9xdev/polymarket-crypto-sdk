@@ -23,6 +23,12 @@ pub struct LimitQuery {
 }
 
 #[derive(Deserialize)]
+pub struct FillsQuery {
+    pub limit: Option<i64>,
+    pub slug: Option<String>,
+}
+
+#[derive(Deserialize)]
 pub struct ReportsQuery {
     pub limit: Option<i64>,
     pub asset: Option<String>,
@@ -161,15 +167,26 @@ pub async fn orders(State(st): State<AppState>, Query(q): Query<LimitQuery>) -> 
     Json(json!({ "orders": items }))
 }
 
-pub async fn fills(State(st): State<AppState>, Query(q): Query<LimitQuery>) -> Json<Value> {
+pub async fn fills(State(st): State<AppState>, Query(q): Query<FillsQuery>) -> Json<Value> {
     let limit = q.limit.unwrap_or(50).min(200);
-    let rows = sqlx::query(
-        "SELECT slug, side, px, size, fee, ts FROM fills ORDER BY ts DESC LIMIT $1",
-    )
-    .bind(limit)
-    .fetch_all(st.store.pool())
-    .await
-    .unwrap_or_default();
+    let rows = if let Some(ref slug) = q.slug {
+        sqlx::query(
+            "SELECT slug, side, px, size, fee, ts FROM fills WHERE slug = $1 ORDER BY ts ASC LIMIT $2",
+        )
+        .bind(slug)
+        .bind(limit)
+        .fetch_all(st.store.pool())
+        .await
+        .unwrap_or_default()
+    } else {
+        sqlx::query(
+            "SELECT slug, side, px, size, fee, ts FROM fills ORDER BY ts DESC LIMIT $1",
+        )
+        .bind(limit)
+        .fetch_all(st.store.pool())
+        .await
+        .unwrap_or_default()
+    };
     let items: Vec<_> = rows
         .iter()
         .map(|r| {

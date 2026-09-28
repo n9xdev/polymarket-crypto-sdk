@@ -14,7 +14,6 @@ import {
   CartesianGrid,
   BarChart,
   Bar,
-  Cell,
   Legend,
   ReferenceLine,
 } from "recharts";
@@ -33,6 +32,8 @@ import {
   fetchSeries,
   type DashboardPayload,
 } from "../lib/api";
+import AnalyticsHub from "./AnalyticsHub";
+import { formatUsd, pnlClass } from "../lib/analytics";
 
 type Tab =
   | "overview"
@@ -40,25 +41,37 @@ type Tab =
   | "chart"
   | "positions"
   | "reports"
-  | "performance"
-  | "hours"
-  | "volume"
-  | "buckets"
+  | "analytics"
   | "risk"
   | "ops";
 
-const TABS: { id: Tab; label: string }[] = [
-  { id: "overview", label: "Overview" },
-  { id: "live", label: "Live market" },
-  { id: "chart", label: "Price graph" },
-  { id: "positions", label: "Orders & fills" },
-  { id: "reports", label: "Market reports" },
-  { id: "performance", label: "Performance" },
-  { id: "hours", label: "Active hours" },
-  { id: "volume", label: "Daily volume" },
-  { id: "buckets", label: "Price buckets" },
-  { id: "risk", label: "Risk & controls" },
-  { id: "ops", label: "System / ops" },
+const NAV_GROUPS: { label: string; items: { id: Tab; label: string }[] }[] = [
+  {
+    label: "Trading",
+    items: [
+      { id: "overview", label: "Overview" },
+      { id: "live", label: "Live market" },
+      { id: "chart", label: "Price graph" },
+    ],
+  },
+  {
+    label: "History",
+    items: [
+      { id: "positions", label: "Orders & fills" },
+      { id: "reports", label: "Market reports" },
+    ],
+  },
+  {
+    label: "Insights",
+    items: [{ id: "analytics", label: "Analytics" }],
+  },
+  {
+    label: "System",
+    items: [
+      { id: "risk", label: "Risk & controls" },
+      { id: "ops", label: "Logs & alerts" },
+    ],
+  },
 ];
 
 export default function Dashboard() {
@@ -104,21 +117,23 @@ export default function Dashboard() {
   }, [refresh]);
 
   useEffect(() => {
-    if (tab === "reports" || tab === "performance") {
-      const p: Record<string, string> = { limit: "100" };
+    if (tab === "reports" || tab === "analytics") {
+      const p: Record<string, string> = { limit: "200" };
       if (reportAsset) p.asset = reportAsset;
       if (reportTf) p.timeframe = reportTf;
       if (reportResult) p.result = reportResult;
       fetchReports(p).then((r) => setReports(r.reports ?? []));
+    }
+    if (tab === "analytics") {
+      fetchAnalyticsHours().then((r) => setHours(r.hours ?? []));
+      fetchAnalyticsDaily(30).then((r) => setDaily(r.days ?? []));
+      fetchAnalyticsBuckets().then((r) => setBuckets(r.buckets ?? []));
     }
     if (tab === "ops") fetchEvents(120).then((r) => setEvents(r.events ?? []));
     if (tab === "positions") {
       fetchOrders().then((r) => setOrders(r.orders ?? []));
       fetchFills().then((r) => setFills(r.fills ?? []));
     }
-    if (tab === "hours") fetchAnalyticsHours().then((r) => setHours(r.hours ?? []));
-    if (tab === "volume") fetchAnalyticsDaily(30).then((r) => setDaily(r.days ?? []));
-    if (tab === "buckets") fetchAnalyticsBuckets().then((r) => setBuckets(r.buckets ?? []));
   }, [tab, reportAsset, reportTf, reportResult]);
 
   const seriesSlug = selectedSlug ?? slug;
@@ -232,30 +247,37 @@ export default function Dashboard() {
   return (
     <div className="dashboard-shell">
       <aside className="sidebar">
-        <h1>Polymarket Crypto SDK</h1>
-        <p>Read-only admin · engine telemetry</p>
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            className={clsx("nav-btn", tab === t.id && "active")}
-            onClick={() => setTab(t.id)}
-          >
-            {t.label}
-          </button>
+        <div className="sidebar-brand">
+          <h1>Crypto engine</h1>
+          <p>Paper trading · read-only dashboard</p>
+        </div>
+        {NAV_GROUPS.map((g) => (
+          <div key={g.label}>
+            <div className="nav-group-label">{g.label}</div>
+            {g.items.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                className={clsx("nav-btn", tab === t.id && "active")}
+                onClick={() => setTab(t.id)}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
         ))}
       </aside>
       <div className="main">
-        <header style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center", marginBottom: 20 }}>
+        <header className="page-header">
           <span className={clsx("badge", engineState)}>{engineState.toUpperCase()}</span>
           {dryRun && <span className="badge dry">DRY RUN</span>}
           {Boolean((data?.heartbeat as Record<string, unknown>)?.kill) && (
             <span className="badge killed">KILL ON</span>
           )}
-          <span style={{ color: "var(--muted)", fontSize: 13 }}>
+          <span className="page-header-meta">
             {viewActive ? slug : `No active ${viewTf} window`}
             {" · "}
-            view {viewTf} · engine snapshot 5s · CLOB books live (WS)
+            {viewTf} view · snapshot 5s
           </span>
           {error && <span style={{ color: "var(--red)", fontSize: 13 }}>{error}</span>}
           {killMsg && <span style={{ color: "var(--amber)", fontSize: 13 }}>{killMsg}</span>}
@@ -263,7 +285,7 @@ export default function Dashboard() {
 
         <ViewBar viewTf={viewTf} onViewTf={setViewTf} config={(rawSnap.config ?? data?.config_meta) as Record<string, unknown>} />
 
-        {(tab === "reports" || tab === "performance") && (
+        {(tab === "reports" || tab === "analytics") && (
           <ReportFiltersBar
             asset={reportAsset}
             tf={reportTf}
@@ -303,10 +325,15 @@ export default function Dashboard() {
         {tab === "reports" && (
           <ReportsTable reports={reports} onSelect={(s) => { setSelectedSlug(s); setTab("chart"); }} />
         )}
-        {tab === "performance" && <Performance pnl={data?.pnl} reports={reports} />}
-        {tab === "hours" && <HoursChart hours={hours} />}
-        {tab === "volume" && <DailyChart daily={daily} />}
-        {tab === "buckets" && <BucketsChart buckets={buckets} />}
+        {tab === "analytics" && (
+          <AnalyticsHub
+            pnl={data?.pnl}
+            reports={reports}
+            hours={hours}
+            daily={daily}
+            buckets={buckets}
+          />
+        )}
         {tab === "risk" && <RiskPanel data={data} snap={snap} onKill={onKill} />}
         {tab === "ops" && <OpsPanel snap={snap} events={events} />}
       </div>
@@ -394,18 +421,31 @@ function Overview({
   const coinbase = (feeds.coinbase_spot ?? {}) as Record<string, unknown>;
   const binance = (feeds.binance_spot ?? {}) as Record<string, unknown>;
   const pnl = data?.pnl;
+  const totalPnl = parseFloat(String(pnl?.total_pnl ?? 0));
 
   return (
     <>
-      <div className="grid-4" style={{ marginBottom: 16 }}>
-        <MetricCard label="Total PnL" value={pnl?.total_pnl ?? "0"} />
-        <MetricCard label="Win rate" value={pct(pnl?.win_rate)} />
-        <MetricCard label="Trades" value={String(pnl?.trade_count ?? 0)} />
-        <MetricCard label="Avg PnL / market" value={pnl?.avg_pnl_per_market ?? "—"} />
+      <div className="overview-kpi">
+        <div className="kpi-tile">
+          <div className="kpi-label">Total PnL</div>
+          <div className={clsx("kpi-value", pnlClass(totalPnl))}>{formatUsd(totalPnl)}</div>
+        </div>
+        <div className="kpi-tile">
+          <div className="kpi-label">Win rate</div>
+          <div className="kpi-value">{pct(pnl?.win_rate)}</div>
+        </div>
+        <div className="kpi-tile">
+          <div className="kpi-label">Markets</div>
+          <div className="kpi-value">{String(pnl?.trade_count ?? 0)}</div>
+        </div>
+        <div className="kpi-tile">
+          <div className="kpi-label">Engine</div>
+          <div className="kpi-value" style={{ fontSize: 18 }}>{String(snap.engine_state ?? "—")}</div>
+        </div>
       </div>
       <div className="grid-2">
         <div className="card">
-          <h3>Engine & feeds</h3>
+          <h3>Feeds</h3>
           <FeedRow name="Chainlink spot" freshness={String(spot.freshness)} age={spot.age_ms} />
           <FeedRow name="Chainlink TWAP" freshness={String(twap.freshness)} age={twap.age_ms} />
           <FeedRow name="Coinbase spot" freshness={String(coinbase.freshness ?? "unknown")} age={coinbase.age_ms} />
@@ -426,14 +466,16 @@ function Overview({
           {otherWin?.active && (
             <p className="metric-label">Also live: {String((otherWin.market as Record<string, unknown>)?.slug ?? other)}</p>
           )}
-          {canOpenPriceGraph && (
-            <button type="button" className="btn-secondary" style={{ marginTop: 16, marginRight: 8 }} onClick={onOpenPriceGraph}>
-              View price graph (current window)
+          <div className="quick-links">
+            {canOpenPriceGraph && (
+              <button type="button" className="btn-secondary" onClick={onOpenPriceGraph}>
+                Price graph
+              </button>
+            )}
+            <button type="button" className="btn-secondary" onClick={onKill}>
+              Kill switch
             </button>
-          )}
-          <button type="button" className="btn-danger" style={{ marginTop: 16 }} onClick={onKill}>
-            Activate kill switch
-          </button>
+          </div>
         </div>
       </div>
     </>
@@ -544,7 +586,8 @@ function LiveMarket({
         <p>Strategy: <strong>{String(strat.state ?? "—")}</strong></p>
         <p>TWAP − beat: {String(strat.twap_minus_beat ?? "—")} (threshold {String(strat.twap_beat_diff_usd ?? "—")})</p>
         <p>Best ask &gt; min: {String(strat.best_ask_ok ?? "—")}</p>
-        <p>Last decision: {JSON.stringify(snap.last_decision ?? null)}</p>
+        <p className="metric-label" style={{ marginTop: 8 }}>Last decision</p>
+        <code className="decision-pill">{formatDecision(snap.last_decision)}</code>
         <button type="button" className="btn-secondary" style={{ marginTop: 12 }} onClick={onOpenPriceGraph}>
           View BTC price graph (this window)
         </button>
@@ -731,7 +774,7 @@ function PriceChart({
                   <Tooltip
                     contentStyle={{ background: "#121820", border: "1px solid #1e2836" }}
                     labelFormatter={(ms) => formatChartTickMs(Number(ms))}
-                    formatter={(v: number) => [`${Number(v).toFixed(3)}%`, ""]}
+                    formatter={(v) => [`${Number(v ?? 0).toFixed(3)}%`, ""]}
                   />
                   <Legend />
                   <ReferenceLine y={0} stroke="#8b9cb3" strokeDasharray="3 3" />
@@ -807,7 +850,8 @@ function ReportsTable({
 }) {
   return (
     <div className="card">
-      <h3>Closed windows</h3>
+      <h3 style={{ textTransform: "none", fontSize: 15, color: "var(--text)" }}>Closed windows</h3>
+      <p className="metric-label" style={{ marginTop: -8, marginBottom: 16 }}>Click a row to open its price graph.</p>
       {reports.length === 0 ? (
         <p className="empty">No closed market reports yet.</p>
       ) : (
@@ -826,10 +870,7 @@ function ReportsTable({
           <tbody>
             {reports.map((r) => (
               <tr key={String(r.slug)} style={{ cursor: "pointer" }} onClick={() => onSelect(String(r.slug))}>
-                <td>
-                  {String(r.slug)}
-                  <span className="metric-label" style={{ marginLeft: 8 }}>→ price graph</span>
-                </td>
+                <td>{String(r.slug)}</td>
                 <td>{String(r.result)}</td>
                 <td>{String(r.pnl)}</td>
                 <td>{String(r.net)}</td>
@@ -845,120 +886,16 @@ function ReportsTable({
   );
 }
 
-function Performance({ pnl, reports }: { pnl?: DashboardPayload["pnl"]; reports: Record<string, unknown>[] }) {
-  const cumulative = useMemo(() => {
-    let sum = 0;
-    return [...reports].reverse().map((r, i) => {
-      sum += parseFloat(String(r.pnl ?? 0));
-      return { i, pnl: sum };
-    });
-  }, [reports]);
-
-  return (
-    <div className="grid-2">
-      <div className="card">
-        <h3>Summary</h3>
-        <MetricCard label="Total PnL" value={pnl?.total_pnl ?? "0"} />
-        <p>Win rate {pct(pnl?.win_rate)} · trades {pnl?.trade_count ?? 0}</p>
-        <p>Avg winner {pnl?.avg_winner ?? "—"} · avg loser {pnl?.avg_loser ?? "—"}</p>
-      </div>
-      <div className="card">
-        <h3>Cumulative PnL</h3>
-        <div className="chart-wrap">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={cumulative}>
-              <CartesianGrid stroke="#1e2836" />
-              <XAxis dataKey="i" hide />
-              <YAxis stroke="#8b9cb3" fontSize={11} />
-              <Tooltip contentStyle={{ background: "#121820", border: "1px solid #1e2836" }} />
-              <Line type="monotone" dataKey="pnl" stroke="#3dd68c" dot={false} />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function HoursChart({ hours }: { hours: Record<string, unknown>[] }) {
-  const data = hours.map((h) => ({
-    hour: `${h.hour}h`,
-    trades: Number(h.trades ?? 0),
-    pnl: parseFloat(String(h.pnl ?? 0)),
-  }));
-  return (
-    <div className="card">
-      <h3>Trades & PnL by UTC hour</h3>
-      {data.length === 0 ? (
-        <p className="empty">No data</p>
-      ) : (
-        <div className="chart-wrap">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={data}>
-              <CartesianGrid stroke="#1e2836" />
-              <XAxis dataKey="hour" stroke="#8b9cb3" fontSize={11} />
-              <YAxis stroke="#8b9cb3" fontSize={11} />
-              <Tooltip contentStyle={{ background: "#121820", border: "1px solid #1e2836" }} />
-              <Bar dataKey="trades" fill="#4da3ff" />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function DailyChart({ daily }: { daily: Record<string, unknown>[] }) {
-  const data = daily.map((d) => ({
-    day: String(d.day),
-    net: parseFloat(String(d.net_pnl ?? 0)),
-    fees: parseFloat(String(d.fees ?? 0)),
-  }));
-  return (
-    <div className="card">
-      <h3>Daily net PnL & fees (30d)</h3>
-      <div className="chart-wrap">
-        <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={data}>
-            <CartesianGrid stroke="#1e2836" />
-            <XAxis dataKey="day" stroke="#8b9cb3" fontSize={10} />
-            <YAxis stroke="#8b9cb3" fontSize={11} />
-            <Tooltip contentStyle={{ background: "#121820", border: "1px solid #1e2836" }} />
-            <Bar dataKey="net" fill="#3dd68c" />
-            <Bar dataKey="fees" fill="#f5a524" />
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
-    </div>
-  );
-}
-
-function BucketsChart({ buckets }: { buckets: Record<string, unknown>[] }) {
-  const colors = ["#4da3ff", "#7c5cff", "#3dd68c", "#f5a524", "#f04438"];
-  return (
-    <div className="card">
-      <h3>PnL by entry price bucket</h3>
-      {buckets.length === 0 ? (
-        <p className="empty">No bucket data (needs signed_px on reports).</p>
-      ) : (
-        <div className="chart-wrap">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={buckets}>
-              <CartesianGrid stroke="#1e2836" />
-              <XAxis dataKey="bucket" stroke="#8b9cb3" fontSize={11} />
-              <YAxis stroke="#8b9cb3" fontSize={11} />
-              <Tooltip contentStyle={{ background: "#121820", border: "1px solid #1e2836" }} />
-              <Bar dataKey="pnl">
-                {buckets.map((_, i) => (
-                  <Cell key={i} fill={colors[i % colors.length]} />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      )}
-    </div>
-  );
+function formatDecision(raw: unknown): string {
+  if (raw == null) return "—";
+  if (typeof raw === "string") return raw;
+  try {
+    const o = raw as Record<string, unknown>;
+    if (o.decision != null) return String(o.decision);
+    return JSON.stringify(raw);
+  } catch {
+    return String(raw);
+  }
 }
 
 function RiskPanel({
@@ -1010,15 +947,6 @@ function OpsPanel({ snap, events }: { snap: Record<string, unknown>; events: Rec
           ))}
         </div>
       </div>
-    </div>
-  );
-}
-
-function MetricCard({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="card">
-      <div className="metric-label">{label}</div>
-      <div className="metric-value">{value}</div>
     </div>
   );
 }

@@ -1,3 +1,4 @@
+mod beat;
 mod dashboard;
 mod run;
 mod secrets;

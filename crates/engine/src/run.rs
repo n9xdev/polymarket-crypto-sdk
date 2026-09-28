@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
-use poly_config::ConfigHandle;
+use poly_config::{ChainlinkSource, ConfigHandle};
 use poly_domain::{Decision, Market};
 use poly_exec::{
     alert_kill_switch, alert_stale_feed, spawn_executor_worker, ExecRequest, Executor,
@@ -20,6 +20,7 @@ use poly_strategy::Strategy;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
+use crate::beat::fetch_beat_at_window_open;
 use crate::dashboard::{build_snapshot, slot_sample_payload, DashboardCtx};
 use crate::secrets::{load_dotenv, EngineSecrets};
 
@@ -117,7 +118,9 @@ impl Engine {
         let mut fired_slugs: HashMap<String, ()> = HashMap::new();
         let mut last_fire_ms: i64 = 0;
         let mut last_slot_sample_ms: HashMap<String, i64> = HashMap::new();
+        let mut last_beat_fetch_ms: HashMap<String, i64> = HashMap::new();
         let dash_ctx = Arc::new(DashboardCtx::new());
+        let secrets_for_beat = secrets.clone();
 
         let mut interval = tokio::time::interval(Duration::from_millis(1));
         let mut heartbeat = tokio::time::interval(Duration::from_millis(
@@ -228,17 +231,41 @@ impl Engine {
                     for tf_key in keys {
                         let Some(market) = active_markets.get(&tf_key).cloned() else { continue };
                         let mut m = (*market).clone();
-                        if m.beat.is_none() {
-                            let twap = bus.chainlink_twap_60.read();
-                            if twap.valid {
-                                if try_capture_beat(&mut m, twap.px, twap.src_ts_ms, Some(bus.chainlink_spot.read().px)).is_some() {
-                                    active_markets.insert(tf_key.clone(), Arc::new(m.clone()));
+                        let open_ms = m.open_ts.timestamp_millis();
+                        let close_ms = m.close_ts.timestamp_millis();
+
+                        if static_cfg.feeds.chainlink_source == ChainlinkSource::DataStreams {
+                            if now_ms >= open_ms && now_ms < close_ms {
+                                let last_fetch = last_beat_fetch_ms.get(&m.slug.0).copied().unwrap_or(0);
+                                if now_ms.saturating_sub(last_fetch) >= 5000 {
+                                    last_beat_fetch_ms.insert(m.slug.0.clone(), now_ms);
+                                    if let Some(beat) =
+                                        fetch_beat_at_window_open(&cfg, &secrets_for_beat, &m).await
+                                    {
+                                        if m.beat != Some(beat) {
+                                            m.beat = Some(beat);
+                                            m.spot_at_open = Some(bus.chainlink_spot.read().px);
+                                            bus.beat.write(Some(beat));
+                                            active_markets.insert(tf_key.clone(), Arc::new(m.clone()));
+                                        }
+                                    }
                                 }
+                            }
+                        } else if m.beat.is_none() {
+                            let twap = bus.chainlink_twap_60.read();
+                            if twap.valid
+                                && try_capture_beat(
+                                    &mut m,
+                                    twap.px,
+                                    twap.src_ts_ms,
+                                    Some(bus.chainlink_spot.read().px),
+                                )
+                                .is_some()
+                            {
+                                active_markets.insert(tf_key.clone(), Arc::new(m.clone()));
                             }
                         }
 
-                        let open_ms = m.open_ts.timestamp_millis();
-                        let close_ms = m.close_ts.timestamp_millis();
                         let mut signal = bus.snapshot(
                             m.twap_lookback_sec,
                             open_ms,

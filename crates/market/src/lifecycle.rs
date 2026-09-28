@@ -163,7 +163,8 @@ impl MarketLifecycle {
     }
 }
 
-/// Called when TWAP sample arrives at/after open.
+/// Fallback beat when not using Chainlink Data Streams REST at window open.
+/// Prefer `fetch_beat_at_window_open` (TWAP60 report at open unix) for Polymarket parity.
 pub fn try_capture_beat(
     market: &mut Market,
     twap_px: Decimal,

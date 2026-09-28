@@ -1,0 +1,18 @@
+[package]
+name = "poly-settle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+poly-domain = { workspace = true }
+poly-market = { workspace = true }
+poly-config = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+chrono = { workspace = true }
+rust_decimal = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }

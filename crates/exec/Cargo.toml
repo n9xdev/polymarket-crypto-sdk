@@ -1,0 +1,21 @@
+[package]
+name = "poly-exec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+poly-domain = { workspace = true }
+poly-config = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+futures-util = { workspace = true }
+tokio-tungstenite = { workspace = true }

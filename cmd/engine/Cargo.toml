@@ -1,0 +1,19 @@
+[package]
+name = "poly-crypto-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "engine"
+path = "src/main.rs"
+
+[dependencies]
+poly-engine = { workspace = true }
+poly-config = { workspace = true }
+poly-strategy = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }

@@ -1,0 +1,61 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/domain",
+    "crates/config",
+    "crates/strategy",
+    "crates/market",
+    "crates/feeds",
+    "crates/signer",
+    "crates/risk",
+    "crates/exec",
+    "crates/settle",
+    "crates/store",
+    "crates/engine",
+    "cmd/engine",
+    "cmd/dashboard-api",
+]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+version = "0.1.0"
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chrono = { version = "0.4", features = ["serde"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+rust_decimal = { version = "1", features = ["serde-with-str", "db-postgres"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid", "json", "migrate", "rust_decimal"] }
+axum = { version = "0.8", features = ["macros"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+clap = { version = "4", features = ["derive"] }
+dotenvy = "0.15"
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+hex = "0.4"
+polymarket_client_sdk_v2 = { version = "0.7", default-features = false, features = ["clob", "gamma", "ws", "ctf"] }
+alloy = { version = "1", default-features = false, features = ["essentials", "signers", "signer-local"] }
+
+poly-domain = { path = "crates/domain" }
+poly-config = { path = "crates/config" }
+poly-strategy = { path = "crates/strategy" }
+poly-market = { path = "crates/market" }
+poly-feeds = { path = "crates/feeds" }
+poly-signer = { path = "crates/signer" }
+poly-risk = { path = "crates/risk" }
+poly-exec = { path = "crates/exec" }
+poly-settle = { path = "crates/settle" }
+poly-store = { path = "crates/store" }
+poly-engine = { path = "crates/engine" }

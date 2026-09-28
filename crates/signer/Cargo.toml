@@ -1,0 +1,24 @@
+[package]
+name = "poly-signer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+poly-domain = { workspace = true }
+poly-config = { workspace = true }
+poly-market = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+rust_decimal = { workspace = true }
+uuid = { workspace = true }
+polymarket_client_sdk_v2 = { workspace = true }
+alloy = { workspace = true }
+
+[dev-dependencies]
+rust_decimal_macros = "1"
+tokio = { workspace = true }
+chrono = { workspace = true }

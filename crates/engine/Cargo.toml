@@ -1,0 +1,24 @@
+[package]
+name = "poly-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+poly-domain = { workspace = true }
+poly-config = { workspace = true }
+poly-strategy = { workspace = true }
+poly-market = { workspace = true }
+poly-feeds = { workspace = true }
+poly-signer = { workspace = true }
+poly-risk = { workspace = true }
+poly-exec = { workspace = true }
+poly-settle = { workspace = true }
+poly-store = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+rust_decimal = { workspace = true }
+dotenvy = { workspace = true }

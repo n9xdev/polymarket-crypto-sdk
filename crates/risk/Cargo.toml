@@ -1,0 +1,11 @@
+[package]
+name = "poly-risk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+poly-domain = { workspace = true }
+poly-config = { workspace = true }
+rust_decimal = { workspace = true }
+chrono = { workspace = true }

@@ -1,0 +1,55 @@
+[market]
+assets = ["btc"]
+timeframes = ["5m", "15m"]
+slug_tpl = "{asset}-updown-{tf}-{window_start}"
+
+[feeds]
+chainlink_spot = true
+chainlink_source = "polybolt" # polybolt | rtds
+
+[feeds.chainlink_twap]
+enabled = true
+prefer_sec = 60
+
+[feeds.coinbase]
+enabled = false
+twap60 = true
+
+[feeds.binance]
+enabled = false
+twap60 = true
+
+[execution]
+order_type = "FAK"
+style = "LIMIT"
+size_usd = 50.0
+grid_min = 0.01
+grid_max = 0.99
+grid_step = 0.01
+
+[strategy]
+name = "default"
+entry_after_sec = 240
+best_ask_min = 0.95
+twap_beat_diff_usd = 2.0
+max_orders_per_market = 1
+cooldown_ms = 250
+
+[risk]
+max_notional_per_hour = 500.0
+max_notional_per_day = 2000.0
+kill_switch_path = "/var/lib/poly-engine/KILL"
+max_ticks_through_book = 2
+
+[infra]
+clob = "https://clob.polymarket.com"
+gamma = "https://gamma-api.polymarket.com"
+polybolt = "wss://ws-live-v2.polymarket.com/ws"
+rtds = "wss://ws-live-data.polymarket.com"
+clob_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+user_ws = "wss://ws-subscriptions-clob.polymarket.com/ws/user"
+region = "eu-west-2"
+dry_run = true
+database_url = "postgres://poly:poly@localhost:5432/poly_crypto"
+redis_url = "redis://127.0.0.1:6379"
+heartbeat_interval_ms = 1000

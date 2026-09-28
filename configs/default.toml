@@ -5,7 +5,18 @@ slug_tpl = "{asset}-updown-{tf}-{window_start}"
 
 [feeds]
 chainlink_spot = true
-chainlink_source = "polybolt" # polybolt | rtds
+# polybolt | rtds | data_streams (paid Chainlink Data Streams)
+chainlink_source = "data_streams"
+chainlink_rest_url = "https://api.dataengine.chain.link"
+chainlink_ws_url = "wss://ws.dataengine.chain.link"
+
+# Crypto Data Streams feed IDs — https://data.chain.link/streams
+[feeds.chainlink_spot_feed_ids]
+btc = "0x00039d9e45394f473ab1f050a1b963e6b05351e52d71e507509ada0c95ed75b8"
+
+# V2 TWAP 60s (schema 0x0002…)
+[feeds.chainlink_twap_60_feed_ids]
+btc = "0x0002ee6757e8822c00d273bc340fc24c9cafe123a4ff2ea1dbdb31944bc7d95f"
 
 [feeds.chainlink_twap]
 enabled = true

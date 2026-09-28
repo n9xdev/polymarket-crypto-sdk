@@ -21,7 +21,9 @@ cd web && npm install && npm run dev
 
 Copy [`.env.example`](.env.example) to `.env` for credentials.
 
-Set `POLY_API_KEY`, `POLY_API_SECRET`, `POLY_PASSPHRASE` for PolyBolt feeds. Set `POLY_PRIVATE_KEY` and `POLY_ADDRESS` when `infra.dry_run = false`.
+**Chainlink prices:** default config uses paid [Data Streams](https://data.chain.link/streams) (`feeds.chainlink_source = "data_streams"`). Set `CHAINLINK_STREAMS_USER_ID` and `CHAINLINK_STREAMS_SECRET` in `.env`, and map feed IDs under `[feeds.chainlink_spot_feed_ids]` / `[feeds.chainlink_twap_60_feed_ids]` in config. For PolyBolt instead, set `chainlink_source = "polybolt"` and `POLY_API_*`.
+
+Set `POLY_PRIVATE_KEY` and `POLY_ADDRESS` when `infra.dry_run = false`.
 
 ## Layout
 

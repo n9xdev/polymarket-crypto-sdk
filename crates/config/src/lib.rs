@@ -5,6 +5,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use poly_domain::{Asset, Timeframe};
+
 use rust_decimal::Decimal;
 use thiserror::Error;
 use tokio::sync::watch;
@@ -130,6 +131,32 @@ fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> {
             "grid must have 99 levels, got {}",
             grid.len()
         )));
+    }
+
+    let source = raw::parse_chainlink_source(&raw.feeds.chainlink_source);
+    if source == raw::ChainlinkSource::DataStreams {
+        let has_spot = raw.market.assets.iter().any(|a| {
+            raw.feeds
+                .chainlink_spot_feed_ids
+                .contains_key(&a.to_lowercase())
+        });
+        let has_twap = raw.market.assets.iter().any(|a| {
+            raw.feeds
+                .chainlink_twap_60_feed_ids
+                .contains_key(&a.to_lowercase())
+        });
+        if !has_spot {
+            return Err(ConfigError::Validation(
+                "data_streams: set feeds.chainlink_spot_feed_ids for each market.assets entry"
+                    .into(),
+            ));
+        }
+        if !has_twap {
+            return Err(ConfigError::Validation(
+                "data_streams: set feeds.chainlink_twap_60_feed_ids for each market.assets entry"
+                    .into(),
+            ));
+        }
     }
 
     Ok(Config {

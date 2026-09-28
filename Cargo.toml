@@ -45,6 +45,8 @@ hmac = "0.12"
 sha2 = "0.10"
 base64 = "0.22"
 hex = "0.4"
+chainlink-data-streams-sdk = { version = "1.2", features = ["websocket", "tracing"] }
+chainlink-data-streams-report = "1.2"
 polymarket_client_sdk_v2 = { version = "0.7", default-features = false, features = ["clob", "gamma", "ws", "ctf"] }
 alloy = { version = "1", default-features = false, features = ["essentials", "signers", "signer-local"] }
 

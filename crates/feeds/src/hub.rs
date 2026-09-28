@@ -7,6 +7,7 @@ use tracing::info;
 
 use crate::bus::SignalBus;
 use crate::clob_ws::{run_clob_books, ClobBookConfig};
+use crate::data_streams::{run_data_streams, DataStreamsConfig, DataStreamsCredentials};
 use crate::polybolt::{run_polybolt, PolyBoltConfig};
 use crate::rtds::{run_rtds_twap30, RtdsConfig};
 
@@ -54,6 +55,36 @@ impl FeedHub {
                 .await;
             }));
         }
+    }
+
+    pub fn spawn_data_streams(
+        &mut self,
+        cfg: ConfigHandle,
+        user_id: String,
+        secret: String,
+    ) {
+        let c = cfg.config();
+        if c.feeds.chainlink_source != ChainlinkSource::DataStreams {
+            return;
+        }
+        if user_id.is_empty() || secret.is_empty() {
+            tracing::warn!(
+                "chainlink_source=data_streams but CHAINLINK_STREAMS_USER_ID/SECRET unset"
+            );
+            return;
+        }
+        let enabled_assets = c.market.assets.clone();
+        let streams = c.feeds.chainlink_data_streams.clone();
+        let bus = self.bus.clone();
+        self.handles.push(tokio::spawn(async move {
+            let ds = DataStreamsConfig {
+                streams,
+                enabled_assets,
+                creds: DataStreamsCredentials { user_id, secret },
+            };
+            let _ = run_data_streams(ds, bus).await;
+        }));
+        info!("spawned Chainlink Data Streams feeds");
     }
 
     pub fn spawn_rtds_30(&mut self, cfg: ConfigHandle) {

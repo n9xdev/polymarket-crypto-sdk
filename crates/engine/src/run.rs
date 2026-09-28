@@ -29,6 +29,7 @@ impl Engine {
         load_dotenv();
         let static_cfg = cfg.config();
         let secrets = EngineSecrets::from_env(&static_cfg.infra)?;
+        EngineSecrets::require_chainlink_streams(&static_cfg)?;
 
         let store = match PostgresStore::connect(&static_cfg.infra.database_url).await {
             Ok(s) => {
@@ -59,6 +60,11 @@ impl Engine {
         });
 
         let mut hub = FeedHub::new();
+        hub.spawn_data_streams(
+            cfg.clone(),
+            secrets.chainlink_streams_user_id.clone(),
+            secrets.chainlink_streams_secret.clone(),
+        );
         hub.spawn_polybolt(
             cfg.clone(),
             secrets.api_key.clone(),

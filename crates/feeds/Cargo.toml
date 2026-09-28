@@ -17,3 +17,6 @@ chrono = { workspace = true }
 rust_decimal = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
+hex = { workspace = true }
+chainlink-data-streams-sdk = { workspace = true }
+chainlink-data-streams-report = { workspace = true }

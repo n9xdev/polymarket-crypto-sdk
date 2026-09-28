@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use rust_decimal::Decimal;
 use serde::Deserialize;
 
@@ -30,6 +32,14 @@ pub struct RawFeeds {
     pub coinbase: RawOptionalFeed,
     #[serde(default)]
     pub binance: RawOptionalFeed,
+    #[serde(default)]
+    pub chainlink_rest_url: Option<String>,
+    #[serde(default)]
+    pub chainlink_ws_url: Option<String>,
+    #[serde(default)]
+    pub chainlink_spot_feed_ids: HashMap<String, String>,
+    #[serde(default)]
+    pub chainlink_twap_60_feed_ids: HashMap<String, String>,
 }
 
 fn default_true() -> bool {
@@ -129,6 +139,7 @@ pub struct FeedsConfig {
     pub chainlink_spot: bool,
     pub chainlink_source: ChainlinkSource,
     pub chainlink_twap: ChainlinkTwapConfig,
+    pub chainlink_data_streams: ChainlinkDataStreamsConfig,
     pub coinbase: OptionalFeedConfig,
     pub binance: OptionalFeedConfig,
 }
@@ -137,6 +148,15 @@ pub struct FeedsConfig {
 pub enum ChainlinkSource {
     Polybolt,
     Rtds,
+    DataStreams,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChainlinkDataStreamsConfig {
+    pub rest_url: String,
+    pub ws_url: String,
+    pub spot_feed_ids: HashMap<String, String>,
+    pub twap_60_feed_ids: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -206,18 +226,35 @@ impl From<RawMarket> for MarketConfig {
     }
 }
 
+pub fn parse_chainlink_source(s: &str) -> ChainlinkSource {
+    match s.to_lowercase().as_str() {
+        "rtds" => ChainlinkSource::Rtds,
+        "data_streams" | "datastreams" | "chainlink" | "chainlink_streams" => {
+            ChainlinkSource::DataStreams
+        }
+        _ => ChainlinkSource::Polybolt,
+    }
+}
+
 impl From<RawFeeds> for FeedsConfig {
     fn from(r: RawFeeds) -> Self {
-        let chainlink_source = match r.chainlink_source.to_lowercase().as_str() {
-            "rtds" => ChainlinkSource::Rtds,
-            _ => ChainlinkSource::Polybolt,
-        };
+        let chainlink_source = parse_chainlink_source(&r.chainlink_source);
         Self {
             chainlink_spot: r.chainlink_spot,
             chainlink_source,
             chainlink_twap: ChainlinkTwapConfig {
                 enabled: r.chainlink_twap.enabled,
                 prefer_sec: r.chainlink_twap.prefer_sec,
+            },
+            chainlink_data_streams: ChainlinkDataStreamsConfig {
+                rest_url: r
+                    .chainlink_rest_url
+                    .unwrap_or_else(|| "https://api.dataengine.chain.link".into()),
+                ws_url: r
+                    .chainlink_ws_url
+                    .unwrap_or_else(|| "wss://ws.dataengine.chain.link".into()),
+                spot_feed_ids: r.chainlink_spot_feed_ids,
+                twap_60_feed_ids: r.chainlink_twap_60_feed_ids,
             },
             coinbase: OptionalFeedConfig {
                 enabled: r.coinbase.enabled,

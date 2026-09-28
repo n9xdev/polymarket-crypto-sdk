@@ -1,5 +1,5 @@
-use anyhow::Result;
-use poly_config::InfraConfig;
+use anyhow::{bail, Result};
+use poly_config::{ChainlinkSource, InfraConfig};
 
 #[derive(Debug, Clone)]
 pub struct EngineSecrets {
@@ -8,6 +8,8 @@ pub struct EngineSecrets {
     pub api_secret: String,
     pub passphrase: String,
     pub address: String,
+    pub chainlink_streams_user_id: String,
+    pub chainlink_streams_secret: String,
 }
 
 impl EngineSecrets {
@@ -19,6 +21,12 @@ impl EngineSecrets {
         let address = std::env::var("POLY_ADDRESS")
             .or_else(|_| std::env::var("POLY_FUNDER_ADDRESS"))
             .unwrap_or_default();
+        let chainlink_streams_user_id = std::env::var("CHAINLINK_STREAMS_USER_ID")
+            .or_else(|_| std::env::var("POLY_CHAINLINK_STREAMS_USER_ID"))
+            .unwrap_or_default();
+        let chainlink_streams_secret = std::env::var("CHAINLINK_STREAMS_SECRET")
+            .or_else(|_| std::env::var("POLY_CHAINLINK_STREAMS_SECRET"))
+            .unwrap_or_default();
 
         if !infra.dry_run {
             if private_key.is_none() {
@@ -28,7 +36,7 @@ impl EngineSecrets {
                 anyhow::bail!("POLY API credentials required when dry_run=false");
             }
             if address.is_empty() {
-                anyhow::bail!("POLY_ADDRESS required when dry_run=false");
+                bail!("POLY_ADDRESS required when dry_run=false");
             }
         }
 
@@ -38,7 +46,27 @@ impl EngineSecrets {
             api_secret,
             passphrase,
             address,
+            chainlink_streams_user_id,
+            chainlink_streams_secret,
         })
+    }
+
+    pub fn require_chainlink_streams(cfg: &poly_config::Config) -> Result<()> {
+        if cfg.feeds.chainlink_source != ChainlinkSource::DataStreams {
+            return Ok(());
+        }
+        let uid = std::env::var("CHAINLINK_STREAMS_USER_ID")
+            .or_else(|_| std::env::var("POLY_CHAINLINK_STREAMS_USER_ID"))
+            .unwrap_or_default();
+        let secret = std::env::var("CHAINLINK_STREAMS_SECRET")
+            .or_else(|_| std::env::var("POLY_CHAINLINK_STREAMS_SECRET"))
+            .unwrap_or_default();
+        if uid.is_empty() || secret.is_empty() {
+            bail!(
+                "CHAINLINK_STREAMS_USER_ID and CHAINLINK_STREAMS_SECRET required when feeds.chainlink_source = data_streams"
+            );
+        }
+        Ok(())
     }
 
     pub fn ensure_dry_run_keys() -> Result<()> {

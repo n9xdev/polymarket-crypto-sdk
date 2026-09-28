@@ -30,6 +30,16 @@ Copy [`.env.example`](.env.example) to `.env` for credentials.
 
 Set `POLY_PRIVATE_KEY` and `POLY_ADDRESS` when `infra.dry_run = false`.
 
+## Dashboard
+
+Run **engine**, **dashboard API**, and **web** together. The engine writes `engine_snapshot` (1 Hz) and `slot_sample` events (1 Hz) to Postgres for live charts.
+
+UI sections: Overview, Live market, Price graph, Orders/fills, Market reports, Performance, Active hours, Daily volume, Price buckets, Risk (kill switch), System/ops (event tail). Global filters: asset, timeframe, result.
+
+API routes include `/api/dashboard`, `/api/series`, `/api/analytics/*`, `/api/events`, `/api/reports/:slug`.
+
+Not yet wired end-to-end (placeholders in UI): wallet balance, order/fill persistence from executor, user-WS status, weekday×hour heatmap, advanced stats (max drawdown, profit factor), chart markers for fills.
+
 ## Layout
 
 See plan: `crates/*` modules, `cmd/engine`, `cmd/dashboard-api`, `web/`.

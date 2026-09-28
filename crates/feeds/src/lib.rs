@@ -1,7 +1,9 @@
+mod binance;
 mod bus;
+mod coinbase;
 mod data_streams;
 mod polybolt;
-mod clob_ws;
+mod clob_book;
 mod rtds;
 mod hub;
 mod local_twap;

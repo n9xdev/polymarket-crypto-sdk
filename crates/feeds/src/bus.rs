@@ -1,4 +1,5 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use chrono::Utc;
@@ -49,6 +50,8 @@ pub struct SignalBus {
     pub coinbase_twap60: LatestSlot<PriceSlot>,
     pub book_up: LatestSlot<Bbo>,
     pub book_down: LatestSlot<Bbo>,
+    token_books: RwLock<HashMap<String, Bbo>>,
+    pub clob_market_ws_connected: AtomicBool,
     pub beat: LatestSlot<Option<Decimal>>,
 }
 
@@ -57,7 +60,34 @@ impl SignalBus {
         Arc::new(Self::default())
     }
 
-    pub fn snapshot(&self, twap_lookback_sec: u32, open_ts_ms: i64, close_ts_ms: i64) -> Signal {
+    pub fn set_token_book(&self, token_id: &str, bbo: Bbo) {
+        if let Ok(mut g) = self.token_books.write() {
+            g.insert(token_id.to_string(), bbo);
+        }
+    }
+
+    pub fn token_book(&self, token_id: &str) -> Option<Bbo> {
+        self.token_books.read().ok()?.get(token_id).copied()
+    }
+
+    pub fn any_fresh_token_book(&self, now_ms: i64) -> bool {
+        let Ok(guard) = self.token_books.read() else {
+            return false;
+        };
+        guard.values().any(|b| {
+            (b.bid > Decimal::ZERO || b.ask > Decimal::ZERO)
+                && !is_stale(b.src_ts_ms, now_ms, STALE_BOOK_MS)
+        })
+    }
+
+    pub fn snapshot(
+        &self,
+        twap_lookback_sec: u32,
+        open_ts_ms: i64,
+        close_ts_ms: i64,
+        token_up: &str,
+        token_down: &str,
+    ) -> Signal {
         let now_ms = Utc::now().timestamp_millis();
         let mut spot = self.chainlink_spot.read();
         let twap_slot = if twap_lookback_sec == 30 {
@@ -70,10 +100,16 @@ impl SignalBus {
         let mut twap = twap_slot;
         let twap_stale = is_stale(twap.src_ts_ms, now_ms, STALE_TWAP_MS) || !twap.valid;
         twap.stale = twap_stale;
-        let mut up = self.book_up.read();
-        let mut down = self.book_down.read();
-        up.valid = up.valid && !is_stale(up.src_ts_ms, now_ms, STALE_BOOK_MS);
-        down.valid = down.valid && !is_stale(down.src_ts_ms, now_ms, STALE_BOOK_MS);
+        let mut up = self
+            .token_book(token_up)
+            .unwrap_or_else(|| self.book_up.read());
+        let mut down = self
+            .token_book(token_down)
+            .unwrap_or_else(|| self.book_down.read());
+        let up_has_px = up.bid > Decimal::ZERO || up.ask > Decimal::ZERO;
+        let down_has_px = down.bid > Decimal::ZERO || down.ask > Decimal::ZERO;
+        up.valid = up_has_px && !is_stale(up.src_ts_ms, now_ms, STALE_BOOK_MS);
+        down.valid = down_has_px && !is_stale(down.src_ts_ms, now_ms, STALE_BOOK_MS);
 
         let secs_into = ((now_ms - open_ts_ms).max(0) / 1000) as i64;
         let secs_left = ((close_ts_ms - now_ms).max(0) / 1000) as i64;

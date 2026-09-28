@@ -14,8 +14,13 @@ struct Args {
     config: PathBuf,
 }
 
+fn init_rustls() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    init_rustls();
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse()?))
         .init();

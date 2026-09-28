@@ -67,6 +67,16 @@ pub struct RawOptionalFeed {
     pub enabled: bool,
     #[serde(default = "default_true")]
     pub twap60: bool,
+    #[serde(default)]
+    pub ws_url: Option<String>,
+}
+
+fn default_coinbase_ws() -> String {
+    "wss://ws-feed.exchange.coinbase.com".into()
+}
+
+fn default_binance_ws() -> String {
+    "wss://stream.binance.com:9443".into()
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -169,6 +179,7 @@ pub struct ChainlinkTwapConfig {
 pub struct OptionalFeedConfig {
     pub enabled: bool,
     pub twap60: bool,
+    pub ws_url: String,
 }
 
 #[derive(Debug, Clone)]
@@ -259,10 +270,15 @@ impl From<RawFeeds> for FeedsConfig {
             coinbase: OptionalFeedConfig {
                 enabled: r.coinbase.enabled,
                 twap60: r.coinbase.twap60,
+                ws_url: r
+                    .coinbase
+                    .ws_url
+                    .unwrap_or_else(default_coinbase_ws),
             },
             binance: OptionalFeedConfig {
                 enabled: r.binance.enabled,
                 twap60: r.binance.twap60,
+                ws_url: r.binance.ws_url.unwrap_or_else(default_binance_ws),
             },
         }
     }

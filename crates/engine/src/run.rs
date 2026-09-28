@@ -20,6 +20,7 @@ use poly_strategy::Strategy;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
+use crate::dashboard::{build_snapshot, slot_sample_payload, DashboardCtx};
 use crate::secrets::{load_dotenv, EngineSecrets};
 
 pub struct Engine;
@@ -72,6 +73,8 @@ impl Engine {
             secrets.passphrase.clone(),
         );
         hub.spawn_rtds_30(cfg.clone());
+        hub.spawn_coinbase(cfg.clone());
+        hub.spawn_binance(cfg.clone());
 
         let (exec_req_tx, exec_req_rx) = mpsc::unbounded_channel();
         let (exec_log_tx, _exec_log_rx) = mpsc::unbounded_channel();
@@ -105,14 +108,16 @@ impl Engine {
         let presigner = Presigner::new(secrets.private_key.clone());
         let cache: Arc<Mutex<HashMap<String, OrderCache>>> = Arc::new(Mutex::new(HashMap::new()));
         let mut risk = RiskGate::default();
-        let mut current_market: Option<Arc<Market>> = None;
+        let mut active_markets: HashMap<String, Arc<Market>> = HashMap::new();
         let bus = hub.bus.clone();
         let grid = static_cfg.grid_prices.clone();
         let exec_cfg = static_cfg.execution.clone();
         let dry_run = static_cfg.infra.dry_run;
 
-        let mut fired_slug: Option<String> = None;
+        let mut fired_slugs: HashMap<String, ()> = HashMap::new();
         let mut last_fire_ms: i64 = 0;
+        let mut last_slot_sample_ms: HashMap<String, i64> = HashMap::new();
+        let dash_ctx = Arc::new(DashboardCtx::new());
 
         let mut interval = tokio::time::interval(Duration::from_millis(1));
         let mut heartbeat = tokio::time::interval(Duration::from_millis(
@@ -133,14 +138,28 @@ impl Engine {
                                 }
                                 Err(e) => warn!(error = %e, "presign failed"),
                             }
-                            if current_market.is_none() {
-                                current_market = Some(market.clone());
-                            }
+                        }
+                        LifecycleEvent::MarketActive { market } => {
+                            hub.spawn_clob_books(
+                                cfg.clone(),
+                                market.token_up.clone(),
+                                market.token_down.clone(),
+                            );
+                            let tf_key = market.timeframe.as_str().to_string();
+                            active_markets.insert(tf_key.clone(), market.clone());
+                            fired_slugs.remove(&market.slug.0);
+                            strategy.on_market_active(&market);
+                            info!(slug = %market.slug.0, tf = %tf_key, "market active");
                         }
                         LifecycleEvent::MarketClosed { slug } => {
                             cache.lock().unwrap().remove(&slug.0);
-                            if current_market.as_ref().is_some_and(|m| m.slug == slug) {
-                                if let Some(m) = current_market.take() {
+                            fired_slugs.remove(&slug.0);
+                            let closed_key = active_markets
+                                .iter()
+                                .find(|(_, m)| m.slug == slug)
+                                .map(|(k, _)| k.clone());
+                            if let Some(key) = closed_key {
+                                if let Some(m) = active_markets.remove(&key) {
                                     let close_twap = bus.chainlink_twap_60.read().px;
                                     let official = fetch_outcome_up_won(&static_cfg.infra.gamma, &m.slug.0).await.ok().flatten();
                                     let report = build_report(
@@ -176,63 +195,105 @@ impl Engine {
                     event_log.append(EventKind::Heartbeat, slot_ages.clone());
                     alert_kill_switch(kill);
                     if let Some(ref st) = store {
+                        let primary_slug = active_markets.get("5m")
+                            .or_else(|| active_markets.values().next())
+                            .map(|m| m.slug.0.as_str());
                         let _ = st.write_heartbeat(
-                            current_market.as_ref().map(|m| m.slug.0.as_str()),
+                            primary_slug,
                             slot_ages,
                             kill,
                             None,
                             dry_run,
                         ).await;
+                        let snap = build_snapshot(
+                            &cfg,
+                            &bus,
+                            &active_markets,
+                            &cache,
+                            &risk,
+                            &dash_ctx,
+                            dry_run,
+                            kill,
+                            "5m",
+                        );
+                        let _ = st.upsert_snapshot(snap).await;
                     }
                 }
                 _ = interval.tick() => {
-                    let Some(market) = current_market.clone() else { continue };
-                    if market.beat.is_none() {
-                        let twap = bus.chainlink_twap_60.read();
-                        if twap.valid {
-                            let mut m = (*market).clone();
-                            if try_capture_beat(&mut m, twap.px, twap.src_ts_ms, Some(bus.chainlink_spot.read().px)).is_some() {
-                                bus.beat.write(m.beat);
-                                current_market = Some(Arc::new(m));
+                    if active_markets.is_empty() {
+                        continue;
+                    }
+                    let now_ms = chrono::Utc::now().timestamp_millis();
+                    let keys: Vec<String> = active_markets.keys().cloned().collect();
+                    for tf_key in keys {
+                        let Some(market) = active_markets.get(&tf_key).cloned() else { continue };
+                        let mut m = (*market).clone();
+                        if m.beat.is_none() {
+                            let twap = bus.chainlink_twap_60.read();
+                            if twap.valid {
+                                if try_capture_beat(&mut m, twap.px, twap.src_ts_ms, Some(bus.chainlink_spot.read().px)).is_some() {
+                                    active_markets.insert(tf_key.clone(), Arc::new(m.clone()));
+                                }
                             }
                         }
-                    }
-                    let m = current_market.as_ref().unwrap();
-                    let open_ms = m.open_ts.timestamp_millis();
-                    let close_ms = m.close_ts.timestamp_millis();
-                    let signal = bus.snapshot(m.twap_lookback_sec, open_ms, close_ms);
-                    let decision = strategy.on_signal(&signal, m);
-                    event_log.append(
-                        EventKind::Decision,
-                        serde_json::json!({ "decision": format!("{:?}", decision) }),
-                    );
 
-                    if let Decision::Buy { side, px, .. } = &decision {
-                        let now_ms = chrono::Utc::now().timestamp_millis();
-                        if fired_slug.as_deref() == Some(m.slug.0.as_str()) {
-                            continue;
+                        let open_ms = m.open_ts.timestamp_millis();
+                        let close_ms = m.close_ts.timestamp_millis();
+                        let mut signal = bus.snapshot(
+                            m.twap_lookback_sec,
+                            open_ms,
+                            close_ms,
+                            &m.token_up,
+                            &m.token_down,
+                        );
+                        signal.beat = m.beat.or(signal.beat);
+
+                        let decision = strategy.on_signal(&signal, &m);
+                        dash_ctx.record_decision(&m.slug.0, &decision);
+                        if !matches!(decision, Decision::Hold) {
+                            event_log.append(
+                                EventKind::Decision,
+                                serde_json::json!({ "slug": m.slug.0, "decision": format!("{decision:?}") }),
+                            );
                         }
-                        if now_ms - last_fire_ms < cfg.strategy().cooldown_ms as i64 {
-                            continue;
+
+                        let last = last_slot_sample_ms.get(&m.slug.0).copied().unwrap_or(0);
+                        if now_ms - last >= 1000 {
+                            last_slot_sample_ms.insert(m.slug.0.clone(), now_ms);
+                            let sample = slot_sample_payload(&m.slug.0, &signal, m.beat);
+                            if let Some(ref st) = store {
+                                let _ = st.append_slot_sample(sample).await;
+                            } else {
+                                event_log.append(EventKind::SlotSample, sample);
+                            }
                         }
-                        let signed = cache.lock().unwrap()
-                            .get(&m.slug.0)
-                            .and_then(|c| c.lookup_price(*side, *px).cloned());
-                        let verdict = risk.check(&cfg.risk(), m, &decision, signed.as_ref(), cfg.strategy().max_orders_per_market);
-                        if let RiskVerdict::Reject(reason) = verdict {
-                            event_log.append(EventKind::Decision, serde_json::json!({"reject": reason}));
-                            continue;
-                        }
-                        if let Some(signed) = signed {
-                            let _ = exec_req_tx.send(ExecRequest {
-                                slug: m.slug.0.clone(),
-                                signed,
-                                order_type: static_cfg.execution.order_type.clone(),
-                                owner: secrets.address.clone(),
-                            });
-                            risk.mark_fired(&m.slug.0);
-                            fired_slug = Some(m.slug.0.clone());
-                            last_fire_ms = now_ms;
+
+                        if let Decision::Buy { side, px, .. } = &decision {
+                            if fired_slugs.contains_key(&m.slug.0) {
+                                continue;
+                            }
+                            if now_ms - last_fire_ms < cfg.strategy().cooldown_ms as i64 {
+                                continue;
+                            }
+                            let signed = cache.lock().unwrap()
+                                .get(&m.slug.0)
+                                .and_then(|c| c.lookup_price(*side, *px).cloned());
+                            let verdict = risk.check(&cfg.risk(), &m, &decision, signed.as_ref(), cfg.strategy().max_orders_per_market);
+                            if let RiskVerdict::Reject(reason) = verdict {
+                                event_log.append(EventKind::Decision, serde_json::json!({"reject": reason, "slug": m.slug.0}));
+                                continue;
+                            }
+                            if let Some(signed) = signed {
+                                let _ = exec_req_tx.send(ExecRequest {
+                                    slug: m.slug.0.clone(),
+                                    signed,
+                                    order_type: static_cfg.execution.order_type.clone(),
+                                    owner: secrets.address.clone(),
+                                });
+                                risk.mark_fired(&m.slug.0);
+                                fired_slugs.insert(m.slug.0.clone(), ());
+                                last_fire_ms = now_ms;
+                            }
                         }
                     }
                 }

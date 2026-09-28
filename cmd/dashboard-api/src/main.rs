@@ -1,25 +1,24 @@
+mod api;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
 use axum::{
-    extract::{Query, State},
     routing::{get, post},
-    Json, Router,
+    Router,
 };
+use chrono::Utc;
 use clap::Parser;
 use poly_config::load_from_path;
 use poly_store::PostgresStore;
-use serde::Deserialize;
-use sqlx::Row;
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::EnvFilter;
 
-#[derive(Clone)]
-struct AppState {
-    store: Arc<PostgresStore>,
-    kill_path: String,
-}
+use api::{
+    analytics_buckets, analytics_daily, analytics_hours, dashboard, events, fills, kill, orders,
+    pnl, report_detail, reports, series, status, AppState,
+};
 
 #[derive(Parser)]
 struct Args {
@@ -35,19 +34,30 @@ async fn main() -> Result<()> {
         .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse()?))
         .init();
     let args = Args::parse();
-    let cfg = load_from_path(&args.config)?;
+    let cfg = Arc::new(load_from_path(&args.config)?);
     let db = cfg.config().infra.database_url.clone();
     let store = Arc::new(PostgresStore::connect(&db).await?);
     store.migrate().await?;
     let state = AppState {
         store,
         kill_path: cfg.risk().kill_switch_path.clone(),
+        config: cfg,
+        config_loaded_at: Utc::now(),
     };
 
     let app = Router::new()
+        .route("/api/dashboard", get(dashboard))
         .route("/api/status", get(status))
         .route("/api/pnl", get(pnl))
         .route("/api/reports", get(reports))
+        .route("/api/reports/{slug}", get(report_detail))
+        .route("/api/events", get(events))
+        .route("/api/series", get(series))
+        .route("/api/orders", get(orders))
+        .route("/api/fills", get(fills))
+        .route("/api/analytics/hours", get(analytics_hours))
+        .route("/api/analytics/daily", get(analytics_daily))
+        .route("/api/analytics/buckets", get(analytics_buckets))
         .route("/api/kill", post(kill))
         .with_state(state)
         .layer(CorsLayer::permissive());
@@ -57,55 +67,4 @@ async fn main() -> Result<()> {
     tracing::info!(%addr, "dashboard-api listening");
     axum::serve(listener, app).await?;
     Ok(())
-}
-
-async fn status(State(st): State<AppState>) -> Json<serde_json::Value> {
-    let hb = st.store.latest_heartbeat().await.ok().flatten();
-    Json(serde_json::json!({ "heartbeat": hb }))
-}
-
-async fn pnl(State(st): State<AppState>) -> Json<serde_json::Value> {
-    let total = st.store.total_pnl().await.unwrap_or_default();
-    let wr = st.store.win_rate().await.unwrap_or(0.0);
-    Json(serde_json::json!({ "total_pnl": total.to_string(), "win_rate": wr }))
-}
-
-#[derive(Deserialize)]
-struct ReportsQuery {
-    limit: Option<i64>,
-}
-
-async fn reports(
-    State(st): State<AppState>,
-    Query(q): Query<ReportsQuery>,
-) -> Json<serde_json::Value> {
-    let limit = q.limit.unwrap_or(50).min(500);
-    let rows = sqlx::query(
-        "SELECT slug, result, pnl, fees, closed_at FROM market_reports ORDER BY closed_at DESC LIMIT $1",
-    )
-    .bind(limit)
-    .fetch_all(st.store.pool())
-    .await
-    .unwrap_or_default();
-    let items: Vec<_> = rows
-        .iter()
-        .map(|r| {
-            serde_json::json!({
-                "slug": r.get::<String, _>("slug"),
-                "result": r.get::<String, _>("result"),
-                "pnl": r.get::<rust_decimal::Decimal, _>("pnl").to_string(),
-                "fees": r.get::<rust_decimal::Decimal, _>("fees").to_string(),
-                "closed_at": r.get::<chrono::DateTime<chrono::Utc>, _>("closed_at"),
-            })
-        })
-        .collect();
-    Json(serde_json::json!({ "reports": items }))
-}
-
-async fn kill(State(st): State<AppState>) -> Json<serde_json::Value> {
-    if let Some(parent) = std::path::Path::new(&st.kill_path).parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let _ = std::fs::write(&st.kill_path, b"1");
-    Json(serde_json::json!({ "ok": true, "path": st.kill_path }))
 }

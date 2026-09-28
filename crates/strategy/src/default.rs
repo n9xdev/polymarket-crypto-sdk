@@ -78,6 +78,10 @@ impl super::Strategy for DefaultStrategy {
     fn on_signal(&mut self, signal: &Signal, market: &Market) -> Decision {
         self.evaluate(signal, market)
     }
+
+    fn on_market_active(&mut self, _market: &Market) {
+        self.reset_fired();
+    }
 }
 
 #[cfg(test)]

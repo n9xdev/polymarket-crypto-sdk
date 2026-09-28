@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,6 +16,10 @@ use crate::time_sync::{adjusted_unix, measure_server_offset};
 #[derive(Debug, Clone)]
 pub enum LifecycleEvent {
     MarketReady {
+        market: Arc<Market>,
+    },
+    /// Emitted once when wall-clock enters [open, close) for a prefetched market.
+    MarketActive {
         market: Arc<Market>,
     },
     MarketClosed {
@@ -58,10 +62,11 @@ impl MarketLifecycle {
         }
 
         let mut tracked: HashMap<String, Arc<Market>> = HashMap::new();
+        let mut live_notified: HashSet<String> = HashSet::new();
         let mut interval = tokio::time::interval(Duration::from_secs(1));
         loop {
             interval.tick().await;
-            self.tick(&infra, &mut tracked).await?;
+            self.tick(&infra, &mut tracked, &mut live_notified).await?;
         }
     }
 
@@ -69,6 +74,7 @@ impl MarketLifecycle {
         &self,
         infra: &InfraConfig,
         tracked: &mut HashMap<String, Arc<Market>>,
+        live_notified: &mut HashSet<String>,
     ) -> anyhow::Result<()> {
         let cfg = self.cfg.config();
         let now = adjusted_unix(Utc::now().timestamp(), self.server_offset);
@@ -107,19 +113,53 @@ impl MarketLifecycle {
                     }
                 }
 
-                if let Some(m) = tracked.get(&current.slug.0).cloned() {
-                    if now >= current.window_end {
-                        let _ = self.tx.send(LifecycleEvent::MarketClosed {
-                            slug: current.slug.clone(),
-                        });
-                        tracked.remove(&current.slug.0);
-                    } else if m.status != MarketStatus::Live && now >= current.window_start {
-                        // Beat capture handled via external feed callback in engine
-                    }
-                }
             }
         }
+
+        self.close_expired(tracked, live_notified, now);
+        self.notify_active(tracked, live_notified, now);
         Ok(())
+    }
+
+    fn close_expired(
+        &self,
+        tracked: &mut HashMap<String, Arc<Market>>,
+        live_notified: &mut HashSet<String>,
+        now: i64,
+    ) {
+        let expired: Vec<String> = tracked
+            .iter()
+            .filter(|(_, m)| now >= m.close_ts.timestamp())
+            .map(|(k, _)| k.clone())
+            .collect();
+        for key in expired {
+            if let Some(m) = tracked.remove(&key) {
+                live_notified.remove(&key);
+                let _ = self
+                    .tx
+                    .send(LifecycleEvent::MarketClosed { slug: m.slug.clone() });
+            }
+        }
+    }
+
+    fn notify_active(
+        &self,
+        tracked: &HashMap<String, Arc<Market>>,
+        live_notified: &mut HashSet<String>,
+        now: i64,
+    ) {
+        for (key, m) in tracked {
+            if now >= m.open_ts.timestamp()
+                && now < m.close_ts.timestamp()
+                && !live_notified.contains(key)
+            {
+                live_notified.insert(key.clone());
+                let _ = self.tx.send(LifecycleEvent::MarketActive {
+                    market: m.clone(),
+                });
+                info!(slug = %key, "market active");
+            }
+        }
     }
 }
 

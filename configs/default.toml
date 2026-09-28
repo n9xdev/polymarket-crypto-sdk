@@ -23,12 +23,14 @@ enabled = true
 prefer_sec = 60
 
 [feeds.coinbase]
-enabled = false
+enabled = true
 twap60 = true
+# ws_url = "wss://ws-feed.exchange.coinbase.com"
 
 [feeds.binance]
-enabled = false
+enabled = true
 twap60 = true
+# ws_url = "wss://stream.binance.com:9443"
 
 [execution]
 order_type = "FAK"

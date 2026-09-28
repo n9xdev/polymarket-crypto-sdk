@@ -54,12 +54,13 @@ pub struct GammaMarketRaw {
     pub start_date: Option<String>,
     #[serde(rename = "endDate", default)]
     pub end_date: Option<String>,
+    /// Gamma sends this as a JSON number or string depending on market version.
     #[serde(rename = "orderPriceMinTickSize", default)]
-    pub tick_size: Option<String>,
+    pub tick_size: Option<serde_json::Value>,
     #[serde(rename = "negRisk", default)]
     pub neg_risk: Option<bool>,
     #[serde(default)]
-    pub fee: Option<String>,
+    pub fee: Option<serde_json::Value>,
     #[serde(rename = "cryptoMarketConfig", default)]
     pub crypto_market_config: Option<CryptoMarketConfig>,
 }
@@ -68,6 +69,14 @@ pub struct GammaMarketRaw {
 pub struct CryptoMarketConfig {
     #[serde(rename = "twapLookbackSeconds", default)]
     pub twap_lookback_seconds: Option<u32>,
+}
+
+fn parse_decimal_value(v: &serde_json::Value) -> Option<Decimal> {
+    match v {
+        serde_json::Value::String(s) => s.parse().ok(),
+        serde_json::Value::Number(n) => n.to_string().parse().ok(),
+        _ => None,
+    }
 }
 
 fn parse_string_list(v: &serde_json::Value) -> Vec<String> {
@@ -109,8 +118,8 @@ pub fn gamma_to_market(
         .ok_or_else(|| anyhow!("missing conditionId"))?;
     let tick = raw
         .tick_size
-        .as_deref()
-        .and_then(|s| s.parse::<Decimal>().ok())
+        .as_ref()
+        .and_then(parse_decimal_value)
         .unwrap_or_else(|| Decimal::new(1, 2));
     let twap_lookback = raw
         .crypto_market_config
@@ -119,10 +128,7 @@ pub fn gamma_to_market(
         .unwrap_or(60);
     let open_ts = parse_dt(raw.start_date.as_deref()).unwrap_or_else(Utc::now);
     let close_ts = parse_dt(raw.end_date.as_deref()).unwrap_or_else(Utc::now);
-    let fee_rate = raw
-        .fee
-        .as_deref()
-        .and_then(|s| s.parse::<Decimal>().ok());
+    let fee_rate = raw.fee.as_ref().and_then(parse_decimal_value);
 
     Ok(Market {
         slug,
@@ -179,5 +185,27 @@ pub fn token_for_side(market: &Market, side: Side) -> &str {
     match side {
         Side::Up => &market.token_up,
         Side::Down => &market.token_down,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deserialize_gamma_market_tick_as_number() {
+        let raw: GammaMarketRaw = serde_json::from_str(
+            r#"{
+                "conditionId": "0xabc",
+                "clobTokenIds": "[\"111\", \"222\"]",
+                "outcomes": "[\"Up\", \"Down\"]",
+                "orderPriceMinTickSize": 0.01
+            }"#,
+        )
+        .expect("parse sample gamma json");
+        assert_eq!(
+            raw.tick_size.as_ref().and_then(parse_decimal_value),
+            Some(Decimal::new(1, 2))
+        );
     }
 }

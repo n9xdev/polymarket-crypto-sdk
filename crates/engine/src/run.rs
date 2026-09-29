@@ -161,8 +161,8 @@ impl Engine {
         let mut last_risk_reject: HashMap<String, String> = HashMap::new();
         let secrets_for_beat = secrets.clone();
 
-        // Cooldown is 250ms; a 1ms loop only multiplied decision inserts.
-        let mut interval = tokio::time::interval(Duration::from_millis(250));
+        let decision_ms = static_cfg.infra.decision_interval_ms;
+        let mut interval = tokio::time::interval(Duration::from_millis(decision_ms));
         interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
         let mut heartbeat = tokio::time::interval(Duration::from_millis(
             static_cfg.infra.heartbeat_interval_ms.max(1000),

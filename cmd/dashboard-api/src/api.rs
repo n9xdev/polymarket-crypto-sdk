@@ -110,7 +110,11 @@ pub async fn report_detail(
     Path(slug): Path<String>,
 ) -> Json<Value> {
     let report = st.store.report_by_slug(&slug).await.ok().flatten();
-    let series = st.store.slot_series(&slug, 600).await.unwrap_or_default();
+    let series = st
+        .store
+        .slot_series(&slug, series_limit_for_slug(&slug))
+        .await
+        .unwrap_or_default();
     Json(json!({ "report": report, "series": series }))
 }
 
@@ -125,9 +129,32 @@ pub async fn events(State(st): State<AppState>, Query(q): Query<EventsQuery>) ->
 }
 
 pub async fn series(State(st): State<AppState>, Query(q): Query<SeriesQuery>) -> Json<Value> {
-    let limit = q.limit.unwrap_or(360).min(3600);
+    let limit = q
+        .limit
+        .unwrap_or_else(|| series_limit_for_slug(&q.slug))
+        .min(3600);
     let points = st.store.slot_series(&q.slug, limit).await.unwrap_or_default();
     Json(json!({ "slug": q.slug, "points": points }))
+}
+
+/// ~1 Hz slot samples with occasional duplicates; 3× window seconds, capped for API safety.
+fn series_limit_for_slug(slug: &str) -> i64 {
+    let slug = slug.to_ascii_lowercase();
+    let Some(rest) = slug.split("-updown-").nth(1) else {
+        return 1200;
+    };
+    let head = rest.split('-').next().unwrap_or("");
+    if let Some(mins) = head.strip_suffix('m') {
+        if let Ok(m) = mins.parse::<i64>() {
+            return (m * 60 * 3).clamp(300, 3600);
+        }
+    }
+    if let Some(hours) = head.strip_suffix('h') {
+        if let Ok(h) = hours.parse::<i64>() {
+            return (h * 3600 * 3).clamp(300, 3600);
+        }
+    }
+    1200
 }
 
 pub async fn analytics_hours(State(st): State<AppState>) -> Json<Value> {

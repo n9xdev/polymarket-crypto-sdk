@@ -3,10 +3,9 @@
 import clsx from "clsx";
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import {
+  Area,
   Line,
   LineChart,
-  ComposedChart,
-  Scatter,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -16,6 +15,8 @@ import {
   Bar,
   Legend,
   ReferenceLine,
+  ReferenceDot,
+  type TooltipContentProps,
 } from "recharts";
 import { useLiveClobBooks } from "../lib/clobLive";
 import { viewSnapshot, configuredAssets, assetWindowsForTf } from "../lib/view";
@@ -240,7 +241,7 @@ export default function Dashboard() {
         windowBeat ??
         undefined,
     }));
-    if (fromSeries.length > 0) return fromSeries;
+    if (fromSeries.length > 0) return padChartToWindow(fromSeries, seriesSlug);
 
     const sig = (snap.signal ?? {}) as Record<string, unknown>;
     const feeds = (snap.feeds ?? {}) as Record<string, unknown>;
@@ -760,6 +761,38 @@ function PriceChart({
   const hasMom =
     chartData.some((p) => p.coinbaseMom != null) || chartData.some((p) => p.binanceMom != null);
   const isLiveWindow = Boolean(currentSlug && slug === currentSlug);
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+  const onChartMouseMove = useCallback(
+    (state: { activeTooltipIndex?: string | number | null }) => {
+      setHoverIdx(chartPointIndex(state?.activeTooltipIndex, chartData));
+    },
+    [chartData],
+  );
+  const onChartMouseLeave = useCallback(() => setHoverIdx(null), []);
+  const renderPriceTooltip = useCallback(
+    (props: TooltipContentProps) => (
+      <PriceGraphTooltip
+        {...props}
+        chartData={chartData}
+        fillMarkers={fillMarkers}
+        hoverIdx={hoverIdx}
+      />
+    ),
+    [chartData, fillMarkers, hoverIdx],
+  );
+  const momYDomain = useMemo(() => momentumChartYDomain(chartData), [chartData]);
+  const momTickFmt = useCallback(
+    (v: number) => formatMomentumTick(v, momYDomain),
+    [momYDomain],
+  );
+  const latestMom = chartData.length ? chartData[chartData.length - 1] : undefined;
+  const hoverMomRow = hoverIdx != null ? chartData[hoverIdx] : latestMom;
+  const renderMomTooltip = useCallback(
+    (props: TooltipContentProps) => (
+      <MomentumGraphTooltip {...props} chartData={chartData} hoverIdx={hoverIdx} momYDomain={momYDomain} />
+    ),
+    [chartData, hoverIdx, momYDomain],
+  );
   return (
     <div className="card">
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center", marginBottom: 8 }}>
@@ -793,21 +826,25 @@ function PriceChart({
         <>
           <div className="chart-wrap">
             <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={chartData}>
+              <LineChart
+                data={chartData}
+                onMouseMove={onChartMouseMove}
+                onMouseLeave={onChartMouseLeave}
+              >
                 <CartesianGrid stroke="#1e2836" strokeDasharray="3 3" />
                 <XAxis
-                  dataKey="xMs"
-                  type="number"
-                  domain={["dataMin", "dataMax"]}
+                  dataKey="t"
+                  type="category"
                   stroke="#8b9cb3"
                   fontSize={11}
-                  tickFormatter={(ms) => formatChartTickMs(Number(ms))}
+                  interval="preserveStartEnd"
+                  minTickGap={28}
                 />
                 <YAxis stroke="#8b9cb3" fontSize={11} domain={priceChartYDomain(chartData)} />
                 <Tooltip
-                  content={(props) => (
-                    <PriceGraphTooltip {...props} fillMarkers={fillMarkers} />
-                  )}
+                  shared
+                  cursor={{ stroke: "#8b9cb3", strokeWidth: 1 }}
+                  content={renderPriceTooltip}
                 />
                 <Legend />
                 <Line type="monotone" dataKey="beat" name="Beat" stroke="#7c5cff" dot={false} connectNulls={false} strokeWidth={2} />
@@ -825,49 +862,160 @@ function PriceChart({
                 {hasBnTwap && (
                   <Line type="monotone" dataKey="binanceTwap" name="BN TWAP60" stroke="#ffe066" dot={false} connectNulls={false} strokeWidth={1.25} strokeDasharray="2 2" />
                 )}
-                {fillMarkers.length > 0 && (
-                  <Scatter
-                    data={fillMarkers}
-                    dataKey="markY"
-                    name="Purchase"
-                    fill="#f5a524"
-                    legendType="circle"
-                    isAnimationActive={false}
-                    shape={FillMarkShape}
-                  />
-                )}
-              </ComposedChart>
+                {fillMarkers.map((m) => {
+                  const anchor = nearestChartPointByMs(chartData, m.xMs);
+                  if (!anchor) return null;
+                  return (
+                    <ReferenceDot
+                      key={`fill-${m.xMs}-${m.label}`}
+                      x={anchor.t}
+                      y={m.markY}
+                      r={7}
+                      fill="#f5a524"
+                      stroke="#1a1208"
+                      strokeWidth={2}
+                      label={{
+                        value: m.label,
+                        position: "top",
+                        fill: "#f5a524",
+                        fontSize: 11,
+                      }}
+                    />
+                  );
+                })}
+              </LineChart>
             </ResponsiveContainer>
           </div>
           {hasMom && (
-            <div className="chart-wrap" style={{ height: 160, marginTop: 16 }}>
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={chartData}>
-                  <CartesianGrid stroke="#1e2836" strokeDasharray="3 3" />
-                  <XAxis
-                    dataKey="xMs"
-                    type="number"
-                    domain={["dataMin", "dataMax"]}
-                    stroke="#8b9cb3"
-                    fontSize={11}
-                    tickFormatter={(ms) => formatChartTickMs(Number(ms))}
-                  />
-                  <YAxis stroke="#8b9cb3" fontSize={11} domain={[-2, 2]} tickFormatter={(v) => `${v}%`} />
-                  <Tooltip
-                    contentStyle={{ background: "#121820", border: "1px solid #1e2836" }}
-                    labelFormatter={(ms) => formatChartTickMs(Number(ms))}
-                    formatter={(v) => [`${Number(v ?? 0).toFixed(3)}%`, ""]}
-                  />
-                  <Legend />
-                  <ReferenceLine y={0} stroke="#8b9cb3" strokeDasharray="3 3" />
-                  {chartData.some((p) => p.coinbaseMom != null) && (
-                    <Line type="monotone" dataKey="coinbaseMom" name="CB momentum" stroke="#f7931a" dot={false} connectNulls={false} strokeWidth={1.5} />
-                  )}
-                  {chartData.some((p) => p.binanceMom != null) && (
-                    <Line type="monotone" dataKey="binanceMom" name="BN momentum" stroke="#f0b90b" dot={false} connectNulls={false} strokeWidth={1.5} strokeDasharray="4 2" />
-                  )}
-                </LineChart>
-              </ResponsiveContainer>
+            <div style={{ marginTop: 20 }}>
+              <div
+                style={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  gap: 16,
+                  alignItems: "baseline",
+                  marginBottom: 10,
+                }}
+              >
+                <h4 style={{ margin: 0, fontSize: 14, color: "#c5d0de" }}>Short-term momentum</h4>
+                {hoverMomRow?.coinbaseMom != null && (
+                  <span className="metric-label" style={{ color: momentumColor(hoverMomRow.coinbaseMom) }}>
+                    CB{" "}
+                    <strong style={{ fontFamily: "var(--font-mono, monospace)" }}>
+                      {formatMomentumPct(hoverMomRow.coinbaseMom, momYDomain)}
+                    </strong>
+                    {hoverIdx != null ? " @ cursor" : " · latest"}
+                  </span>
+                )}
+                {hoverMomRow?.binanceMom != null && (
+                  <span className="metric-label" style={{ color: momentumColor(hoverMomRow.binanceMom) }}>
+                    BN{" "}
+                    <strong style={{ fontFamily: "var(--font-mono, monospace)" }}>
+                      {formatMomentumPct(hoverMomRow.binanceMom, momYDomain)}
+                    </strong>
+                  </span>
+                )}
+                <span className="metric-label" style={{ opacity: 0.75 }}>
+                  Y scale auto ({formatMomentumPct(momYDomain[0], momYDomain)} … {formatMomentumPct(momYDomain[1], momYDomain)})
+                </span>
+              </div>
+              <div className="chart-wrap chart-wrap-momentum" style={{ height: 200 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart
+                    data={chartData}
+                    onMouseMove={onChartMouseMove}
+                    onMouseLeave={onChartMouseLeave}
+                    margin={{ top: 8, right: 12, left: 4, bottom: 0 }}
+                  >
+                    <defs>
+                      <linearGradient id="cbMomArea" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#3dd68c" stopOpacity={0.45} />
+                        <stop offset="45%" stopColor="#f7931a" stopOpacity={0.12} />
+                        <stop offset="100%" stopColor="#ff6b6b" stopOpacity={0.4} />
+                      </linearGradient>
+                      <linearGradient id="bnMomArea" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#ffe066" stopOpacity={0.35} />
+                        <stop offset="100%" stopColor="#f0b90b" stopOpacity={0.08} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid stroke="#1e2836" strokeDasharray="3 3" vertical={false} />
+                    <XAxis
+                      dataKey="t"
+                      type="category"
+                      stroke="#8b9cb3"
+                      fontSize={11}
+                      interval="preserveStartEnd"
+                      minTickGap={28}
+                      tickLine={false}
+                    />
+                    <YAxis
+                      stroke="#8b9cb3"
+                      fontSize={11}
+                      domain={momYDomain}
+                      tickFormatter={momTickFmt}
+                      width={56}
+                      tickLine={false}
+                    />
+                    <Tooltip cursor={{ stroke: "#8b9cb3", strokeWidth: 1 }} content={renderMomTooltip} />
+                    <Legend wrapperStyle={{ fontSize: 12, paddingTop: 4 }} />
+                    <ReferenceLine y={0} stroke="#5a6a82" strokeWidth={1.5} />
+                    {hoverIdx != null && chartData[hoverIdx]?.t && (
+                      <ReferenceLine x={chartData[hoverIdx].t} stroke="#8b9cb3" strokeDasharray="4 4" />
+                    )}
+                    {chartData.some((p) => p.coinbaseMom != null) && (
+                      <Area
+                        type="monotone"
+                        dataKey="coinbaseMom"
+                        name="CB momentum"
+                        stroke="none"
+                        fill="url(#cbMomArea)"
+                        connectNulls={false}
+                        isAnimationActive={false}
+                      />
+                    )}
+                    {chartData.some((p) => p.binanceMom != null) && (
+                      <Area
+                        type="monotone"
+                        dataKey="binanceMom"
+                        name="BN momentum"
+                        stroke="none"
+                        fill="url(#bnMomArea)"
+                        connectNulls={false}
+                        isAnimationActive={false}
+                      />
+                    )}
+                    {chartData.some((p) => p.coinbaseMom != null) && (
+                      <Line
+                        type="monotone"
+                        dataKey="coinbaseMom"
+                        name="CB momentum"
+                        stroke="#f7931a"
+                        dot={false}
+                        connectNulls={false}
+                        strokeWidth={2}
+                        activeDot={{ r: 5, stroke: "#1a1208", strokeWidth: 2, fill: "#f7931a" }}
+                        legendType="none"
+                        isAnimationActive={false}
+                      />
+                    )}
+                    {chartData.some((p) => p.binanceMom != null) && (
+                      <Line
+                        type="monotone"
+                        dataKey="binanceMom"
+                        name="BN momentum"
+                        stroke="#f0b90b"
+                        dot={false}
+                        connectNulls={false}
+                        strokeWidth={2}
+                        strokeDasharray="6 3"
+                        activeDot={{ r: 5, stroke: "#1a1208", strokeWidth: 2, fill: "#f0b90b" }}
+                        legendType="none"
+                        isAnimationActive={false}
+                      />
+                    )}
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
             </div>
           )}
           {fillMarkers.length > 0 && (
@@ -1196,6 +1344,31 @@ function windowOpenMsFromSlug(slug: string): number | null {
   return openSec * 1000;
 }
 
+function windowDurationMsFromSlug(slug: string): number {
+  const m = slug.toLowerCase().match(/-updown-(\d+)m-/);
+  if (m) return parseInt(m[1], 10) * 60 * 1000;
+  const h = slug.toLowerCase().match(/-updown-(\d+)h-/);
+  if (h) return parseInt(h[1], 10) * 3600 * 1000;
+  return 5 * 60 * 1000;
+}
+
+/** Extend category X-axis to window open/close even when samples start late or stop early. */
+function padChartToWindow(rows: ChartPoint[], slug: string): ChartPoint[] {
+  const openMs = windowOpenMsFromSlug(slug);
+  if (openMs == null || rows.length === 0) return rows;
+  const closeMs = openMs + windowDurationMsFromSlug(slug);
+  const sorted = [...rows].sort((a, b) => a.xMs - b.xMs);
+  const out = [...sorted];
+  const pad = (ms: number): ChartPoint => ({
+    t: new Date(ms).toISOString().slice(11, 19),
+    xMs: ms,
+  });
+  if (sorted[0].xMs > openMs + 800) out.unshift(pad(openMs));
+  const last = sorted[sorted.length - 1];
+  if (last.xMs < closeMs - 800) out.push(pad(closeMs));
+  return out.sort((a, b) => a.xMs - b.xMs);
+}
+
 function robustChartAnchor(rows: ChartPoint[]): number | null {
   const vals: number[] = [];
   for (const p of rows) {
@@ -1255,21 +1428,41 @@ function headIsChartOutlier(a: ChartPoint, b: ChartPoint, ref: number): boolean 
   return Math.abs(va - vb) / vb > 0.05 && (va < ref * 0.5 || va > ref * 2);
 }
 
+function chartPointIndex(
+  activeIndex: string | number | null | undefined,
+  chartData: ChartPoint[],
+): number | null {
+  if (activeIndex == null || !chartData.length) return null;
+  if (typeof activeIndex === "number" && activeIndex >= 0 && activeIndex < chartData.length) {
+    return activeIndex;
+  }
+  const s = String(activeIndex);
+  const asNum = Number(s);
+  if (Number.isInteger(asNum) && asNum >= 0 && asNum < chartData.length) return asNum;
+  const byKey = chartData.findIndex((p) => p.t === s || String(p.xMs) === s);
+  return byKey >= 0 ? byKey : null;
+}
+
 function PriceGraphTooltip({
   active,
-  payload,
+  activeIndex,
   label,
+  chartData,
   fillMarkers,
-}: {
-  active?: boolean;
-  payload?: { payload?: ChartPoint; dataKey?: string; value?: number; name?: string }[];
-  label?: string | number;
+  hoverIdx,
+}: TooltipContentProps & {
+  chartData: ChartPoint[];
   fillMarkers: FillMarker[];
+  hoverIdx: number | null;
 }) {
-  if (!active || !payload?.length) return null;
-  const row = payload[0]?.payload as ChartPoint | undefined;
+  if (!active || !chartData.length) return null;
+  const idx =
+    hoverIdx ??
+    chartPointIndex(activeIndex, chartData) ??
+    chartPointIndex(label, chartData);
+  const row = idx != null ? chartData[idx] : undefined;
   if (!row) return null;
-  const xMs = typeof label === "number" ? label : row.xMs;
+  const xMs = row.xMs;
   const purchase = fillMarkers.find((m) => Math.abs(m.xMs - xMs) < 1500);
 
   const rows: { name: string; value?: number; color: string }[] = [
@@ -1314,25 +1507,6 @@ function formatChartPrice(n: number) {
   if (!Number.isFinite(n)) return "—";
   if (n >= 1000) return n.toFixed(2);
   return n.toPrecision(6);
-}
-
-function FillMarkShape(props: {
-  cx?: number;
-  cy?: number;
-  payload?: { label?: string };
-}) {
-  const { cx, cy, payload } = props;
-  if (cx == null || cy == null) return null;
-  const label = payload?.label ?? "Fill";
-  return (
-    <g>
-      <line x1={cx} y1={cy} x2={cx} y2={Math.max(8, cy - 36)} stroke="#f5a524" strokeWidth={2} strokeDasharray="5 3" />
-      <circle cx={cx} cy={cy} r={7} fill="#f5a524" stroke="#1a1208" strokeWidth={2} />
-      <text x={cx} y={Math.max(4, cy - 40)} fill="#f5a524" fontSize={11} textAnchor="middle">
-        {label}
-      </text>
-    </g>
-  );
 }
 
 function nearestChartPointByMs(chartData: ChartPoint[], xMs: number): ChartPoint | undefined {
@@ -1404,6 +1578,87 @@ function chartPrice(v?: string) {
 function chartAssetLabel(slug: string) {
   const a = slug.split("-")[0]?.toUpperCase();
   return a || "Asset";
+}
+
+function momentumChartYDomain(data: ChartPoint[]): [number, number] {
+  const vals: number[] = [];
+  for (const p of data) {
+    if (p.coinbaseMom != null && Number.isFinite(p.coinbaseMom)) vals.push(p.coinbaseMom);
+    if (p.binanceMom != null && Number.isFinite(p.binanceMom)) vals.push(p.binanceMom);
+  }
+  if (vals.length === 0) return [-0.05, 0.05];
+  let min = Math.min(...vals);
+  let max = Math.max(...vals);
+  min = Math.min(min, 0);
+  max = Math.max(max, 0);
+  const span = Math.max(max - min, 0.0005);
+  const pad = Math.max(span * 0.2, 0.0015);
+  return [min - pad, max + pad];
+}
+
+function formatMomentumTick(v: number, domain: [number, number]): string {
+  const span = domain[1] - domain[0];
+  const decimals = span < 0.02 ? 4 : span < 0.2 ? 3 : 2;
+  return `${v.toFixed(decimals)}%`;
+}
+
+function formatMomentumPct(v: number, domain?: [number, number]): string {
+  const span = domain ? domain[1] - domain[0] : Math.abs(v) * 2 || 0.01;
+  const decimals = span < 0.02 ? 4 : span < 0.2 ? 3 : 2;
+  const sign = v > 0 ? "+" : "";
+  return `${sign}${v.toFixed(decimals)}%`;
+}
+
+function momentumColor(v: number): string {
+  if (v > 0.0005) return "#3dd68c";
+  if (v < -0.0005) return "#ff6b6b";
+  return "#f7931a";
+}
+
+function MomentumGraphTooltip({
+  active,
+  activeIndex,
+  label,
+  chartData,
+  hoverIdx,
+  momYDomain,
+}: TooltipContentProps & {
+  chartData: ChartPoint[];
+  hoverIdx: number | null;
+  momYDomain: [number, number];
+}) {
+  if (!active || !chartData.length) return null;
+  const idx =
+    hoverIdx ?? chartPointIndex(activeIndex, chartData) ?? chartPointIndex(label, chartData);
+  const row = idx != null ? chartData[idx] : undefined;
+  if (!row) return null;
+  const series: { name: string; value?: number; color: string }[] = [
+    { name: "CB momentum", value: row.coinbaseMom, color: "#f7931a" },
+    { name: "BN momentum", value: row.binanceMom, color: "#f0b90b" },
+  ];
+  return (
+    <div
+      style={{
+        background: "#121820",
+        border: "1px solid #1e2836",
+        padding: "10px 12px",
+        fontSize: 12,
+        borderRadius: 6,
+        boxShadow: "0 8px 24px rgba(0,0,0,0.35)",
+      }}
+    >
+      <div style={{ color: "#8b9cb3", marginBottom: 8 }}>{formatChartTickMs(row.xMs)}</div>
+      {series.map(
+        (s) =>
+          s.value != null && (
+            <div key={s.name} style={{ color: momentumColor(s.value), marginTop: 4 }}>
+              <span style={{ color: s.color }}>{s.name}</span> :{" "}
+              {formatMomentumPct(s.value, momYDomain)}
+            </div>
+          ),
+      )}
+    </div>
+  );
 }
 
 function priceChartYDomain(data: ChartPoint[]): [number, number] | ["auto", "auto"] {

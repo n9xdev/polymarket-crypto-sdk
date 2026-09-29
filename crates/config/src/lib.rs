@@ -150,6 +150,12 @@ fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> {
         }
     }
 
+    if raw.infra.decision_interval_ms < 10 || raw.infra.decision_interval_ms > 5000 {
+        return Err(ConfigError::Validation(
+            "infra.decision_interval_ms must be between 10 and 5000".into(),
+        ));
+    }
+
     Ok(Config {
         market: raw.market.into(),
         feeds: raw.feeds.into(),

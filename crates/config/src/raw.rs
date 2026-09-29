@@ -155,10 +155,16 @@ pub struct RawInfra {
     pub redis_url: String,
     #[serde(default = "default_hb")]
     pub heartbeat_interval_ms: u64,
+    #[serde(default = "default_decision_interval_ms")]
+    pub decision_interval_ms: u64,
 }
 
 fn default_hb() -> u64 {
     1000
+}
+
+fn default_decision_interval_ms() -> u64 {
+    250
 }
 
 #[derive(Debug, Clone)]
@@ -256,6 +262,7 @@ pub struct InfraConfig {
     pub database_url: String,
     pub redis_url: String,
     pub heartbeat_interval_ms: u64,
+    pub decision_interval_ms: u64,
 }
 
 impl From<RawMarket> for MarketConfig {
@@ -371,6 +378,7 @@ impl From<RawInfra> for InfraConfig {
             database_url: r.database_url,
             redis_url: r.redis_url,
             heartbeat_interval_ms: r.heartbeat_interval_ms,
+            decision_interval_ms: r.decision_interval_ms,
         }
     }
 }

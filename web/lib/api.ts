@@ -30,8 +30,18 @@ export async function fetchEvents(limit = 80) {
   return r.json();
 }
 
+/** Match dashboard API: enough points for full window at ~1–2 Hz (see series_limit_for_slug). */
+export function seriesLimitForSlug(slug: string): number {
+  const m = slug.toLowerCase().match(/-updown-(\d+)m-/);
+  if (m) return Math.min(3600, Math.max(300, parseInt(m[1], 10) * 60 * 3));
+  const h = slug.toLowerCase().match(/-updown-(\d+)h-/);
+  if (h) return Math.min(3600, Math.max(300, parseInt(h[1], 10) * 3600 * 3));
+  return 1200;
+}
+
 export async function fetchSeries(slug: string) {
-  const r = await fetch(`/api/series?slug=${encodeURIComponent(slug)}&limit=360`, {
+  const limit = seriesLimitForSlug(slug);
+  const r = await fetch(`/api/series?slug=${encodeURIComponent(slug)}&limit=${limit}`, {
     cache: "no-store",
   });
   return r.json();

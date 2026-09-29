@@ -62,7 +62,7 @@ entry_after_sec = 20
 best_ask_min = 0.60
 twap_beat_diff_usd = 0.0
 max_orders_per_market = 1
-cooldown_ms = 250
+cooldown_ms = 50
 
 [risk]
 max_notional_per_hour = 500.0
@@ -82,3 +82,5 @@ dry_run = true
 database_url = "postgres://poly:poly@localhost:5433/poly_crypto"
 redis_url = "redis://127.0.0.1:6379"
 heartbeat_interval_ms = 1000
+# Strategy evaluation + order fire check rate (ms). Pair with strategy.cooldown_ms.
+decision_interval_ms = 50

@@ -1,5 +1,5 @@
 [market]
-assets = ["btc"]
+assets = ["btc", "eth", "sol", "xrp"]
 timeframes = ["5m"]
 slug_tpl = "{asset}-updown-{tf}-{window_start}"
 
@@ -10,13 +10,19 @@ chainlink_source = "data_streams"
 chainlink_rest_url = "https://api.dataengine.chain.link"
 chainlink_ws_url = "wss://ws.dataengine.chain.link"
 
-# Crypto Data Streams feed IDs — https://data.chain.link/streams
+# Crypto Data Streams feed IDs — https://data.chain.link/streams (CexPrice V3 spot)
 [feeds.chainlink_spot_feed_ids]
 btc = "0x00039d9e45394f473ab1f050a1b963e6b05351e52d71e507509ada0c95ed75b8"
+eth = "0x000362205e10b3a147d02792eccee483dca6c7b44ecce7012cb8c6e0b68b3ae9"
+sol = "0x0003b778d3f6b2ac4991302b89cb313f99a42467d6c9c5f96f57c29c0d2bc24f"
+xrp = "0x0003c16c6aed42294f5cb4741f6e59ba2d728f0eae2eb9e6d3f555808c59fc45"
 
-# V2 TWAP 60s (schema 0x0002…)
+# V2 TWAP 60s (schema 0x0002…) — mainnet production streams
 [feeds.chainlink_twap_60_feed_ids]
 btc = "0x0002ee6757e8822c00d273bc340fc24c9cafe123a4ff2ea1dbdb31944bc7d95f"
+eth = "0x0002fbf9f58ef89c93385770d289d7c10c01c250641daa811063e303ee095593"
+sol = "0x00028f809156a08fbb1baa92e4e7ee9f056dd262e86df0fa1e74637be7725676"
+xrp = "0x0002d8a05177b903142185df7a75b7d6fd5d535ca1050e9b6c051a49ee1ad3da"
 
 [feeds.chainlink_twap]
 enabled = true

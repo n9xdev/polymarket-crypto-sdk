@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use poly_config::StrategyConfig;
 use poly_domain::{
     quantize_to_grid, Decision, Market, Side, Signal,
@@ -7,7 +9,7 @@ use rust_decimal::Decimal;
 pub struct DefaultStrategy {
     pub cfg: StrategyConfig,
     pub grid_step: Decimal,
-    pub fired_count: u32,
+    fired_by_slug: HashMap<String, u32>,
 }
 
 impl DefaultStrategy {
@@ -15,19 +17,21 @@ impl DefaultStrategy {
         Self {
             cfg,
             grid_step,
-            fired_count: 0,
+            fired_by_slug: HashMap::new(),
         }
     }
 
-    pub fn reset_fired(&mut self) {
-        self.fired_count = 0;
+    pub fn note_order_sent(&mut self, market: &Market) {
+        let n = self.fired_by_slug.entry(market.slug.0.clone()).or_insert(0);
+        *n = n.saturating_add(1);
     }
 
     pub fn evaluate(&self, signal: &Signal, market: &Market) -> Decision {
         if signal.secs_into_window < self.cfg.entry_after_sec as i64 {
             return Decision::Hold;
         }
-        if self.fired_count >= self.cfg.max_orders_per_market {
+        let fired = self.fired_by_slug.get(&market.slug.0).copied().unwrap_or(0);
+        if fired >= self.cfg.max_orders_per_market {
             return Decision::Hold;
         }
         if signal.stale.any_required() {
@@ -79,8 +83,12 @@ impl super::Strategy for DefaultStrategy {
         self.evaluate(signal, market)
     }
 
-    fn on_market_active(&mut self, _market: &Market) {
-        self.reset_fired();
+    fn on_market_active(&mut self, market: &Market) {
+        self.fired_by_slug.remove(&market.slug.0);
+    }
+
+    fn on_order_sent(&mut self, market: &Market) {
+        self.note_order_sent(market);
     }
 }
 
@@ -211,5 +219,18 @@ mod tests {
             strat().evaluate(&s, &market()),
             Decision::Reject { .. }
         ));
+    }
+
+    #[test]
+    fn hold_after_order_sent_for_that_market() {
+        let mut strategy = strat();
+        let m = market();
+        let signal = signal_base();
+        assert!(matches!(
+            strategy.evaluate(&signal, &m),
+            Decision::Buy { .. }
+        ));
+        strategy.note_order_sent(&m);
+        assert!(matches!(strategy.evaluate(&signal, &m), Decision::Hold));
     }
 }

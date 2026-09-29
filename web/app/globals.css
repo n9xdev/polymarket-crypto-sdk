@@ -117,6 +117,55 @@ a {
   min-width: 200px;
 }
 
+.asset-window-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.asset-window-card {
+  display: block;
+  width: 100%;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  padding: 12px;
+  background: var(--panel-elevated);
+  color: var(--text);
+  font: inherit;
+  font-family: inherit;
+  appearance: none;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.asset-window-card:hover {
+  background: #1f1f23;
+}
+
+.asset-window-card p,
+.asset-window-card strong {
+  color: var(--text);
+  margin: 0 0 6px;
+}
+
+.asset-window-card .metric-label {
+  color: var(--muted);
+}
+
+.asset-window-card .empty {
+  color: var(--muted);
+}
+
+.asset-window-card.active {
+  border-color: var(--green);
+}
+
+.asset-window-card.selected {
+  box-shadow: 0 0 0 1px var(--accent);
+  border-color: var(--accent);
+}
+
 .grid-2 {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

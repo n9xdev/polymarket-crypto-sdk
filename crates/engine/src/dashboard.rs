@@ -148,37 +148,68 @@ pub fn build_snapshot(
     let now_ms = Utc::now().timestamp_millis();
     let now_unix = Utc::now().timestamp();
 
-    let spot_slot = bus.chainlink_spot.read();
-    let twap_slot = bus.chainlink_twap_60.read();
-    let spot_age = feed_age(now_ms, spot_slot.src_ts_ms);
-    let twap_age = feed_age(now_ms, twap_slot.src_ts_ms);
-    let coinbase_slot = bus.coinbase_spot.read();
-    let binance_slot = bus.binance_spot.read();
-    let coinbase_age = feed_age(now_ms, coinbase_slot.src_ts_ms);
-    let binance_age = feed_age(now_ms, binance_slot.src_ts_ms);
-
     let mut windows = Map::new();
     for tf in &static_cfg.market.timeframes {
-        if let Some(m) = active_markets.get(tf.as_str()) {
-            windows.insert(tf.clone(), build_window_view(m, bus, &static_cfg, cache, ctx, risk, now_unix));
-        } else {
+        let tf_str = tf.as_str();
+        let markets_for_tf: Vec<&Arc<Market>> = active_markets
+            .values()
+            .filter(|m| m.timeframe.as_str() == tf_str)
+            .collect();
+        if markets_for_tf.is_empty() {
             windows.insert(
                 tf.clone(),
-                json!({ "active": false, "timeframe": tf }),
+                json!({ "active": false, "timeframe": tf, "markets": [] }),
+            );
+        } else {
+            let market_views: Vec<Value> = markets_for_tf
+                .iter()
+                .map(|m| build_window_view(m, bus, &static_cfg, cache, ctx, risk, now_unix))
+                .collect();
+            windows.insert(
+                tf.clone(),
+                json!({
+                    "active": true,
+                    "timeframe": tf,
+                    "markets": market_views,
+                }),
             );
         }
     }
 
-    let focus_market = active_markets.get(focus_tf).or_else(|| {
-        active_markets
-            .get("5m")
-            .or_else(|| active_markets.values().next())
-    });
+    let focus_market = static_cfg
+        .market
+        .assets
+        .iter()
+        .find_map(|asset| {
+            active_markets.values().find(|m| {
+                m.asset.as_str() == asset.as_str() && m.timeframe.as_str() == focus_tf
+            })
+        })
+        .or_else(|| {
+            active_markets
+                .values()
+                .find(|m| m.timeframe.as_str() == focus_tf)
+        })
+        .or_else(|| active_markets.values().find(|m| m.timeframe.as_str() == "5m"))
+        .or_else(|| active_markets.values().next());
+
+    let focus_asset = focus_market
+        .map(|m| m.asset.as_str())
+        .unwrap_or("btc");
+    let spot_slot = bus.chainlink_spot_for(focus_asset);
+    let twap_slot = bus.chainlink_twap60_for(focus_asset);
+    let spot_age = feed_age(now_ms, spot_slot.src_ts_ms);
+    let twap_age = feed_age(now_ms, twap_slot.src_ts_ms);
+    let coinbase_slot = bus.coinbase_spot_for(focus_asset);
+    let binance_slot = bus.binance_spot.read();
+    let coinbase_age = feed_age(now_ms, coinbase_slot.src_ts_ms);
+    let binance_age = feed_age(now_ms, binance_slot.src_ts_ms);
 
     let any_stale = active_markets.values().any(|m| {
         let open_ms = m.open_ts.timestamp_millis();
         let close_ms = m.close_ts.timestamp_millis();
         bus.snapshot(
+            m.asset.as_str(),
             m.twap_lookback_sec,
             open_ms,
             close_ms,
@@ -287,6 +318,7 @@ fn build_window_view(
     let open_ms = m.open_ts.timestamp_millis();
     let close_ms = m.close_ts.timestamp_millis();
     let mut sig = bus.snapshot(
+        m.asset.as_str(),
         m.twap_lookback_sec,
         open_ms,
         close_ms,

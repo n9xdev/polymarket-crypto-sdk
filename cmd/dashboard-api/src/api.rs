@@ -74,6 +74,8 @@ pub async fn dashboard(State(st): State<AppState>) -> Json<Value> {
             "max_notional_per_hour": cfg.risk.max_notional_per_hour.to_string(),
             "max_notional_per_day": cfg.risk.max_notional_per_day.to_string(),
             "max_orders_per_market": cfg.strategy.max_orders_per_market,
+            "assets": cfg.market.assets,
+            "timeframes": cfg.market.timeframes,
         },
     }))
 }

@@ -34,6 +34,7 @@ enum StreamKind {
 #[derive(Clone)]
 struct SubFeed {
     kind: StreamKind,
+    asset: String,
 }
 
 pub struct DataStreamsCredentials {
@@ -117,7 +118,7 @@ pub async fn run_data_streams(cfg: DataStreamsConfig, bus: Arc<SignalBus>) -> an
                     else {
                         continue;
                     };
-                    publish(&bus, sub.kind, price);
+                    publish(&bus, sub, price);
                 }
                 Err(e) => {
                     warn!(error = %e, "Chainlink stream read error");
@@ -130,13 +131,13 @@ pub async fn run_data_streams(cfg: DataStreamsConfig, bus: Arc<SignalBus>) -> an
     }
 }
 
-fn publish(bus: &Arc<SignalBus>, kind: StreamKind, price: f64) {
+fn publish(bus: &Arc<SignalBus>, sub: &SubFeed, price: f64) {
     let px = Decimal::try_from(price).unwrap_or_else(|_| Decimal::from(0));
     let ts = chrono::Utc::now().timestamp_millis();
     let slot = price_slot(px, ts);
-    match kind {
-        StreamKind::Spot => bus.chainlink_spot.write(slot),
-        StreamKind::Twap60 => bus.chainlink_twap_60.write(slot),
+    match sub.kind {
+        StreamKind::Spot => bus.write_chainlink_spot(&sub.asset, slot),
+        StreamKind::Twap60 => bus.write_chainlink_twap60(&sub.asset, slot),
     }
 }
 
@@ -175,7 +176,11 @@ fn hex_to_sub(subs: &HashMap<String, String>) -> HashMap<String, SubFeed> {
         } else {
             continue;
         };
-        map.insert(norm_feed_hex(hex), SubFeed { kind });
+        let asset = key
+            .split_once(':')
+            .map(|(_, a)| a.to_string())
+            .unwrap_or_else(|| key.clone());
+        map.insert(norm_feed_hex(hex), SubFeed { kind, asset });
     }
     map
 }
@@ -243,7 +248,7 @@ async fn run_rest_poll(
             match client.get_latest_report(feed_id).await {
                 Ok(response) => {
                     if let Some(price) = decode_report_price(&hex, &response.report.full_report) {
-                        publish(&bus, sub.kind, price);
+                        publish(&bus, sub, price);
                     }
                 }
                 Err(e) if is_rate_limited(&e) => {

@@ -19,7 +19,18 @@ use poly_store::{EventKind, EventLog, spawn_writer, PostgresStore};
 use poly_strategy::Strategy;
 use rust_decimal::Decimal;
 use tokio::sync::mpsc;
+use tokio::time::MissedTickBehavior;
 use tracing::{info, warn};
+
+/// Stable label for the event log. Buy price and reason text move every tick;
+/// logging those would write a row on every loop.
+fn decision_log_key(decision: &Decision) -> String {
+    match decision {
+        Decision::Hold => "hold".to_string(),
+        Decision::Reject { reason } => format!("reject:{reason}"),
+        Decision::Buy { side, .. } => format!("buy:{}", side.as_str()),
+    }
+}
 
 fn parse_fill_side(s: &str) -> Option<Side> {
     match s {
@@ -62,7 +73,12 @@ impl Engine {
         let (event_log, event_rx) = EventLog::new();
         if let Some(ref st) = store {
             spawn_writer(event_rx, st.clone());
-            backfill_paper_reports(st.as_ref(), static_cfg.infra.dry_run).await;
+            backfill_paper_reports(
+                st.as_ref(),
+                &static_cfg.infra.gamma,
+                static_cfg.infra.dry_run,
+            )
+            .await;
         }
 
         let (life_tx, mut life_rx) = mpsc::unbounded_channel();
@@ -141,9 +157,13 @@ impl Engine {
         let mut last_fire_ms: i64 = 0;
         let mut last_slot_sample_ms: HashMap<String, i64> = HashMap::new();
         let mut last_beat_fetch_ms: HashMap<String, i64> = HashMap::new();
+        let mut last_logged_decision: HashMap<String, String> = HashMap::new();
+        let mut last_risk_reject: HashMap<String, String> = HashMap::new();
         let secrets_for_beat = secrets.clone();
 
-        let mut interval = tokio::time::interval(Duration::from_millis(1));
+        // Cooldown is 250ms; a 1ms loop only multiplied decision inserts.
+        let mut interval = tokio::time::interval(Duration::from_millis(250));
+        interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
         let mut heartbeat = tokio::time::interval(Duration::from_millis(
             static_cfg.infra.heartbeat_interval_ms.max(1000),
         ));
@@ -169,8 +189,7 @@ impl Engine {
                                 market.token_up.clone(),
                                 market.token_down.clone(),
                             );
-                            let tf_key = market.timeframe.as_str().to_string();
-                            active_markets.insert(tf_key.clone(), market.clone());
+                            active_markets.insert(market.slug.0.clone(), market.clone());
                             fired_slugs.remove(&market.slug.0);
                             strategy.on_market_active(&market);
                             if let Some(ref st) = store {
@@ -182,18 +201,16 @@ impl Engine {
                                     )
                                     .await;
                             }
-                            info!(slug = %market.slug.0, tf = %tf_key, "market active");
+                            info!(slug = %market.slug.0, asset = %market.asset.as_str(), tf = %market.timeframe.as_str(), "market active");
                         }
                         LifecycleEvent::MarketClosed { slug } => {
                             cache.lock().unwrap().remove(&slug.0);
                             fired_slugs.remove(&slug.0);
-                            let closed_key = active_markets
-                                .iter()
-                                .find(|(_, m)| m.slug == slug)
-                                .map(|(k, _)| k.clone());
-                            if let Some(key) = closed_key {
-                                if let Some(m) = active_markets.remove(&key) {
-                                    let close_twap = bus.chainlink_twap_60.read().px;
+                            last_logged_decision.remove(&slug.0);
+                            last_risk_reject.remove(&slug.0);
+                            if let Some(m) = active_markets.remove(&slug.0) {
+                                    let close_twap =
+                                        bus.chainlink_twap60_for(m.asset.as_str()).px;
                                     let official = fetch_outcome_up_won(&static_cfg.infra.gamma, &m.slug.0).await.ok().flatten();
                                     let trade = if let Some(ref st) = store {
                                         st.primary_fill_for_slug(&m.slug.0).await.ok().flatten()
@@ -214,7 +231,7 @@ impl Engine {
                                         signed_px,
                                         share_size,
                                         Some(close_twap),
-                                        Some(bus.chainlink_spot.read().px),
+                                        Some(bus.chainlink_spot_for(m.asset.as_str()).px),
                                         None,
                                         official,
                                         fill_fee,
@@ -223,7 +240,6 @@ impl Engine {
                                     if let Some(ref st) = store {
                                         let _ = st.write_report(&report).await;
                                     }
-                                }
                             }
                         }
                         _ => {}
@@ -231,17 +247,25 @@ impl Engine {
                 }
                 _ = heartbeat.tick() => {
                     let kill = Path::new(&cfg.risk().kill_switch_path).exists();
-                    let spot_age =
-                        chrono::Utc::now().timestamp_millis() - bus.chainlink_spot.read().src_ts_ms;
-                    let twap_age =
-                        chrono::Utc::now().timestamp_millis() - bus.chainlink_twap_60.read().src_ts_ms;
+                    let hb_asset = active_markets
+                        .values()
+                        .find(|m| m.timeframe.as_str() == "5m")
+                        .or_else(|| active_markets.values().next())
+                        .map(|m| m.asset.as_str())
+                        .unwrap_or("btc");
+                    let spot_age = chrono::Utc::now().timestamp_millis()
+                        - bus.chainlink_spot_for(hb_asset).src_ts_ms;
+                    let twap_age = chrono::Utc::now().timestamp_millis()
+                        - bus.chainlink_twap60_for(hb_asset).src_ts_ms;
                     alert_stale_feed("chainlink_spot", spot_age);
                     alert_stale_feed("chainlink_twap", twap_age);
                     let slot_ages = serde_json::json!({ "spot": spot_age, "twap": twap_age });
                     event_log.append(EventKind::Heartbeat, slot_ages.clone());
                     alert_kill_switch(kill);
                     if let Some(ref st) = store {
-                        let primary_slug = active_markets.get("5m")
+                        let primary_slug = active_markets
+                            .values()
+                            .find(|m| m.timeframe.as_str() == "5m")
                             .or_else(|| active_markets.values().next())
                             .map(|m| m.slug.0.as_str());
                         let _ = st.write_heartbeat(
@@ -270,9 +294,9 @@ impl Engine {
                         continue;
                     }
                     let now_ms = chrono::Utc::now().timestamp_millis();
-                    let keys: Vec<String> = active_markets.keys().cloned().collect();
-                    for tf_key in keys {
-                        let Some(market) = active_markets.get(&tf_key).cloned() else { continue };
+                    let slugs: Vec<String> = active_markets.keys().cloned().collect();
+                    for slug_key in slugs {
+                        let Some(market) = active_markets.get(&slug_key).cloned() else { continue };
                         let mut m = (*market).clone();
                         let open_ms = m.open_ts.timestamp_millis();
                         let close_ms = m.close_ts.timestamp_millis();
@@ -287,29 +311,32 @@ impl Engine {
                                     {
                                         if m.beat != Some(beat) {
                                             m.beat = Some(beat);
-                                            m.spot_at_open = Some(bus.chainlink_spot.read().px);
+                                            m.spot_at_open =
+                                                Some(bus.chainlink_spot_for(m.asset.as_str()).px);
                                             bus.beat.write(Some(beat));
-                                            active_markets.insert(tf_key.clone(), Arc::new(m.clone()));
+                                            active_markets.insert(slug_key.clone(), Arc::new(m.clone()));
                                         }
                                     }
                                 }
                             }
                         } else if m.beat.is_none() {
-                            let twap = bus.chainlink_twap_60.read();
+                            let twap = bus.chainlink_twap60_for(m.asset.as_str());
+                            let spot_px = bus.chainlink_spot_for(m.asset.as_str()).px;
                             if twap.valid
                                 && try_capture_beat(
                                     &mut m,
                                     twap.px,
                                     twap.src_ts_ms,
-                                    Some(bus.chainlink_spot.read().px),
+                                    Some(spot_px),
                                 )
                                 .is_some()
                             {
-                                active_markets.insert(tf_key.clone(), Arc::new(m.clone()));
+                                active_markets.insert(slug_key.clone(), Arc::new(m.clone()));
                             }
                         }
 
                         let mut signal = bus.snapshot(
+                            m.asset.as_str(),
                             m.twap_lookback_sec,
                             open_ms,
                             close_ms,
@@ -320,7 +347,13 @@ impl Engine {
 
                         let decision = strategy.on_signal(&signal, &m);
                         dash_ctx.record_decision(&m.slug.0, &decision);
-                        if !matches!(decision, Decision::Hold) {
+                        let log_key = decision_log_key(&decision);
+                        let decision_changed = last_logged_decision
+                            .get(&m.slug.0)
+                            .map(|prev| prev != &log_key)
+                            .unwrap_or(true);
+                        last_logged_decision.insert(m.slug.0.clone(), log_key);
+                        if decision_changed && !matches!(decision, Decision::Hold) {
                             event_log.append(
                                 EventKind::Decision,
                                 serde_json::json!({ "slug": m.slug.0, "decision": format!("{decision:?}") }),
@@ -350,7 +383,14 @@ impl Engine {
                                 .and_then(|c| c.lookup_price(*side, *px).cloned());
                             let verdict = risk.check(&cfg.risk(), &m, &decision, signed.as_ref(), cfg.strategy().max_orders_per_market);
                             if let RiskVerdict::Reject(reason) = verdict {
-                                event_log.append(EventKind::Decision, serde_json::json!({"reject": reason, "slug": m.slug.0}));
+                                let log_it = last_risk_reject
+                                    .get(&m.slug.0)
+                                    .map(|prev| prev != &reason)
+                                    .unwrap_or(true);
+                                if log_it {
+                                    last_risk_reject.insert(m.slug.0.clone(), reason.clone());
+                                    event_log.append(EventKind::Decision, serde_json::json!({"reject": reason, "slug": m.slug.0}));
+                                }
                                 continue;
                             }
                             if let Some(signed) = signed {
@@ -362,6 +402,7 @@ impl Engine {
                                 });
                                 risk.mark_fired(&m.slug.0);
                                 fired_slugs.insert(m.slug.0.clone(), ());
+                                strategy.on_order_sent(&m);
                                 last_fire_ms = now_ms;
                             }
                         }

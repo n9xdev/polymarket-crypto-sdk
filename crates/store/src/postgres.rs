@@ -10,6 +10,20 @@ pub struct PostgresStore {
 }
 
 #[derive(Debug, Clone)]
+pub struct FillMissingReport {
+    pub slug: String,
+    pub asset: String,
+    pub timeframe: String,
+    pub beat: Option<Decimal>,
+    pub twap_lookback_sec: i32,
+    pub close_ts: DateTime<Utc>,
+    pub side: String,
+    pub px: Decimal,
+    pub size: Decimal,
+    pub fee: Decimal,
+}
+
+#[derive(Debug, Clone)]
 pub struct ScratchReportFill {
     pub slug: String,
     pub asset: String,
@@ -115,6 +129,69 @@ impl PostgresStore {
         .fetch_one(&self.pool)
         .await?;
         Ok(row.get("id"))
+    }
+
+    /// Filled slugs that have no row in `market_reports` (e.g. after DB truncate or engine downtime).
+    pub async fn fills_missing_reports(&self, limit: i64) -> Result<Vec<FillMissingReport>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT DISTINCT ON (f.slug)
+                   f.slug,
+                   m.asset,
+                   m.timeframe,
+                   m.beat,
+                   m.twap_lookback_sec,
+                   m.close_ts,
+                   f.side,
+                   f.px,
+                   f.size,
+                   f.fee
+            FROM fills f
+            INNER JOIN markets m ON m.slug = f.slug
+            WHERE NOT EXISTS (SELECT 1 FROM market_reports mr WHERE mr.slug = f.slug)
+            ORDER BY f.slug, f.ts ASC
+            LIMIT $1
+            "#,
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|r| FillMissingReport {
+                slug: r.get("slug"),
+                asset: r.get("asset"),
+                timeframe: r.get("timeframe"),
+                beat: r.try_get("beat").ok(),
+                twap_lookback_sec: r.get("twap_lookback_sec"),
+                close_ts: r.get("close_ts"),
+                side: r.get("side"),
+                px: r.get("px"),
+                size: r.get("size"),
+                fee: r.get("fee"),
+            })
+            .collect())
+    }
+
+    pub async fn last_slot_chainlink_twap(&self, slug: &str) -> Result<Option<Decimal>> {
+        let row = sqlx::query(
+            r#"
+            SELECT payload->'data'->>'chainlink_twap' AS twap
+            FROM event_log
+            WHERE kind = 'slot_sample'
+              AND payload->'data'->>'slug' = $1
+            ORDER BY ts DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(slug)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let s: Option<String> = row.try_get("twap").ok();
+        Ok(s.and_then(|s| s.parse::<Decimal>().ok()))
     }
 
     pub async fn scratch_reports_with_fills(&self) -> Result<Vec<ScratchReportFill>> {
@@ -226,7 +303,7 @@ impl PostgresStore {
                 model_up_wins = EXCLUDED.model_up_wins,
                 official_up_won = EXCLUDED.official_up_won,
                 asset = EXCLUDED.asset,
-                timeframe = EXCLUDED timeframe
+                timeframe = EXCLUDED.timeframe
             "#,
         )
         .bind(&report.slug)

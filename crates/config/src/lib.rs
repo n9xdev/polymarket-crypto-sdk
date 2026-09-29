@@ -135,27 +135,18 @@ fn validate_and_build(raw: RawConfig) -> Result<Config, ConfigError> {
 
     let source = raw::parse_chainlink_source(&raw.feeds.chainlink_source);
     if source == raw::ChainlinkSource::DataStreams {
-        let has_spot = raw.market.assets.iter().any(|a| {
-            raw.feeds
-                .chainlink_spot_feed_ids
-                .contains_key(&a.to_lowercase())
-        });
-        let has_twap = raw.market.assets.iter().any(|a| {
-            raw.feeds
-                .chainlink_twap_60_feed_ids
-                .contains_key(&a.to_lowercase())
-        });
-        if !has_spot {
-            return Err(ConfigError::Validation(
-                "data_streams: set feeds.chainlink_spot_feed_ids for each market.assets entry"
-                    .into(),
-            ));
-        }
-        if !has_twap {
-            return Err(ConfigError::Validation(
-                "data_streams: set feeds.chainlink_twap_60_feed_ids for each market.assets entry"
-                    .into(),
-            ));
+        for a in &raw.market.assets {
+            let key = a.to_lowercase();
+            if !raw.feeds.chainlink_spot_feed_ids.contains_key(&key) {
+                return Err(ConfigError::Validation(format!(
+                    "data_streams: missing feeds.chainlink_spot_feed_ids.{key} for market.assets"
+                )));
+            }
+            if !raw.feeds.chainlink_twap_60_feed_ids.contains_key(&key) {
+                return Err(ConfigError::Validation(format!(
+                    "data_streams: missing feeds.chainlink_twap_60_feed_ids.{key} for market.assets"
+                )));
+            }
         }
     }
 

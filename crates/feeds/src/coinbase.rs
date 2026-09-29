@@ -1,5 +1,6 @@
-//! Coinbase Exchange ticker WebSocket → `coinbase_spot` / optional local TWAP60.
+//! Coinbase Exchange ticker WebSocket → per-asset `coinbase_spot` / local TWAP60.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
@@ -53,12 +54,21 @@ async fn run_session(cfg: &CoinbaseConfig, bus: Arc<SignalBus>) -> Result<()> {
         .await?;
     info!(count = product_ids.len(), "coinbase ticker subscribed");
 
-    let mut twap = LocalTwap60::with_config(cfg.metrics_cfg);
+    let mut twaps: HashMap<String, LocalTwap60> = cfg
+        .assets
+        .iter()
+        .map(|a| {
+            (
+                a.as_str().to_string(),
+                LocalTwap60::with_config(cfg.metrics_cfg),
+            )
+        })
+        .collect();
 
     while let Some(msg) = read.next().await {
         let msg = msg?;
         match msg {
-            Message::Text(t) => handle_ticker(&t, cfg, &bus, &mut twap),
+            Message::Text(t) => handle_ticker(&t, cfg, &bus, &mut twaps),
             Message::Ping(p) => {
                 let _ = write.send(Message::Pong(p)).await;
             }
@@ -69,7 +79,12 @@ async fn run_session(cfg: &CoinbaseConfig, bus: Arc<SignalBus>) -> Result<()> {
     Err(anyhow!("coinbase ws disconnected"))
 }
 
-fn handle_ticker(text: &str, cfg: &CoinbaseConfig, bus: &Arc<SignalBus>, twap: &mut LocalTwap60) {
+fn handle_ticker(
+    text: &str,
+    cfg: &CoinbaseConfig,
+    bus: &Arc<SignalBus>,
+    twaps: &mut HashMap<String, LocalTwap60>,
+) {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
         return;
     };
@@ -93,16 +108,20 @@ fn handle_ticker(text: &str, cfg: &CoinbaseConfig, bus: &Arc<SignalBus>, twap: &
     else {
         return;
     };
+    let asset_key = asset.as_str().to_string();
     let ts_ms = chrono::Utc::now().timestamp_millis();
-    bus.coinbase_spot.write(price_slot(px, ts_ms));
+    bus.write_coinbase_spot(&asset_key, price_slot(px, ts_ms));
     if cfg.local_metrics {
+        let twap = twaps
+            .entry(asset_key.clone())
+            .or_insert_with(|| LocalTwap60::with_config(cfg.metrics_cfg));
         twap.push(px, ts_ms);
         let (twap_opt, mom_opt) = twap.metrics();
         if let Some((twap_px, twap_ts)) = twap_opt {
-            bus.coinbase_twap60.write(price_slot(twap_px, twap_ts));
+            bus.write_coinbase_twap60(&asset_key, price_slot(twap_px, twap_ts));
         }
         if let Some((pct, mom_ts)) = mom_opt {
-            bus.coinbase_momentum_pct.write(price_slot(pct, mom_ts));
+            bus.write_coinbase_momentum_pct(&asset_key, price_slot(pct, mom_ts));
         }
     }
 }

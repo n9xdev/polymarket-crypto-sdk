@@ -18,7 +18,7 @@ import {
   ReferenceLine,
 } from "recharts";
 import { useLiveClobBooks } from "../lib/clobLive";
-import { viewSnapshot, pickWindow } from "../lib/view";
+import { viewSnapshot, configuredAssets, assetWindowsForTf } from "../lib/view";
 import {
   activateKill,
   fetchAnalyticsBuckets,
@@ -86,6 +86,7 @@ export default function Dashboard() {
   const [daily, setDaily] = useState<Record<string, unknown>[]>([]);
   const [buckets, setBuckets] = useState<Record<string, unknown>[]>([]);
   const [viewTf, setViewTf] = useState("5m");
+  const [viewAsset, setViewAsset] = useState("");
   const [reportAsset, setReportAsset] = useState("");
   const [reportTf, setReportTf] = useState("");
   const [reportResult, setReportResult] = useState("");
@@ -95,7 +96,12 @@ export default function Dashboard() {
   const [killMsg, setKillMsg] = useState<string | null>(null);
 
   const rawSnap = (data?.snapshot ?? {}) as Record<string, unknown>;
-  const snap = viewSnapshot(rawSnap, viewTf);
+  const configBundle = (rawSnap.config ?? data?.config_meta) as Record<string, unknown> | undefined;
+  const assetsList = useMemo(
+    () => configuredAssets(rawSnap, data?.config_meta as Record<string, unknown> | undefined),
+    [rawSnap, data?.config_meta],
+  );
+  const snap = viewSnapshot(rawSnap, viewTf, viewAsset || assetsList[0] || "eth");
   const market = snap.current_market as Record<string, unknown> | undefined;
   const slug = (market?.slug as string) ?? "";
   const viewActive = Boolean(snap.view_active);
@@ -115,6 +121,13 @@ export default function Dashboard() {
     const t = setInterval(refresh, 5000);
     return () => clearInterval(t);
   }, [refresh]);
+
+  useEffect(() => {
+    if (viewAsset && assetsList.includes(viewAsset)) return;
+    const rows = assetWindowsForTf(rawSnap, viewTf, assetsList);
+    const firstActive = rows.find((r) => r.active)?.asset;
+    setViewAsset(firstActive ?? assetsList[0] ?? "eth");
+  }, [rawSnap, viewTf, assetsList, viewAsset]);
 
   useEffect(() => {
     if (tab === "reports" || tab === "analytics") {
@@ -154,7 +167,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     loadSeries();
-  }, [loadSeries, viewTf]);
+  }, [loadSeries, viewTf, viewAsset]);
 
   useEffect(() => {
     if (tab !== "chart") return;
@@ -188,7 +201,7 @@ export default function Dashboard() {
   }
 
   const chartData = useMemo(() => {
-    const fromSeries = dedupeChartBySecond(
+    const raw = dedupeChartBySecond(
       series.map((p) => {
         const pt = (p.point ?? {}) as Record<string, string>;
         const ts = String(p.ts ?? "");
@@ -209,6 +222,24 @@ export default function Dashboard() {
         };
       }),
     );
+
+    const sanitized = sanitizeChartSeries(raw, seriesSlug);
+    const anchor = robustChartAnchor(sanitized);
+    const windowBeat = resolveWindowBeat(
+      series,
+      seriesSlug,
+      reports,
+      snap.current_market as Record<string, unknown> | undefined,
+      anchor,
+    );
+
+    const fromSeries = sanitized.map((p) => ({
+      ...p,
+      beat:
+        beatMatchesPriceScale(p.beat, anchor) ??
+        windowBeat ??
+        undefined,
+    }));
     if (fromSeries.length > 0) return fromSeries;
 
     const sig = (snap.signal ?? {}) as Record<string, unknown>;
@@ -234,7 +265,7 @@ export default function Dashboard() {
         binance: chartPrice(String(bn ?? "")),
       },
     ];
-  }, [series, snap]);
+  }, [series, snap, seriesSlug, reports]);
 
   const fillMarkers = useMemo(
     () => buildFillMarkers(chartData, chartFills),
@@ -275,21 +306,28 @@ export default function Dashboard() {
             <span className="badge killed">KILL ON</span>
           )}
           <span className="page-header-meta">
-            {viewActive ? slug : `No active ${viewTf} window`}
+            {viewActive ? slug : `No active ${viewAsset}/${viewTf} window`}
             {" · "}
-            {viewTf} view · snapshot 5s
+            {viewAsset}/{viewTf} · snapshot 5s
           </span>
           {error && <span style={{ color: "var(--red)", fontSize: 13 }}>{error}</span>}
           {killMsg && <span style={{ color: "var(--amber)", fontSize: 13 }}>{killMsg}</span>}
         </header>
 
-        <ViewBar viewTf={viewTf} onViewTf={setViewTf} config={(rawSnap.config ?? data?.config_meta) as Record<string, unknown>} />
+        <ViewBar
+          viewTf={viewTf}
+          viewAsset={viewAsset}
+          onViewTf={setViewTf}
+          onViewAsset={setViewAsset}
+          config={configBundle}
+        />
 
         {(tab === "reports" || tab === "analytics") && (
           <ReportFiltersBar
             asset={reportAsset}
             tf={reportTf}
             result={reportResult}
+            assetOptions={assetsList}
             onAsset={setReportAsset}
             onTf={setReportTf}
             onResult={setReportResult}
@@ -302,6 +340,9 @@ export default function Dashboard() {
             snap={snap}
             rawSnap={rawSnap}
             viewTf={viewTf}
+            viewAsset={viewAsset}
+            assetsList={assetsList}
+            onSelectAsset={setViewAsset}
             onKill={onKill}
             onOpenPriceGraph={openCurrentPriceGraph}
             canOpenPriceGraph={viewActive && Boolean(slug)}
@@ -343,13 +384,28 @@ export default function Dashboard() {
 
 function ViewBar(props: {
   viewTf: string;
+  viewAsset: string;
   onViewTf: (v: string) => void;
+  onViewAsset: (v: string) => void;
   config?: Record<string, unknown>;
 }) {
   const tfs = (props.config?.timeframes as string[] | undefined) ?? ["5m", "15m"];
+  const assets = (props.config?.assets as string[] | undefined) ?? ["btc", "eth"];
   return (
-    <div className="filters">
-      <span className="metric-label" style={{ alignSelf: "center" }}>View timeframe</span>
+    <div className="filters" style={{ flexWrap: "wrap", gap: 8 }}>
+      <span className="metric-label" style={{ alignSelf: "center" }}>Asset</span>
+      {assets.map((a) => (
+        <button
+          key={a}
+          type="button"
+          className={clsx("nav-btn", props.viewAsset === a && "active")}
+          style={{ width: "auto", display: "inline-block", textTransform: "uppercase" }}
+          onClick={() => props.onViewAsset(a)}
+        >
+          {a}
+        </button>
+      ))}
+      <span className="metric-label" style={{ alignSelf: "center", marginLeft: 8 }}>Timeframe</span>
       {tfs.map((tf) => (
         <button
           key={tf}
@@ -369,6 +425,7 @@ function ReportFiltersBar(props: {
   asset: string;
   tf: string;
   result: string;
+  assetOptions: string[];
   onAsset: (v: string) => void;
   onTf: (v: string) => void;
   onResult: (v: string) => void;
@@ -378,8 +435,9 @@ function ReportFiltersBar(props: {
       <span className="metric-label" style={{ alignSelf: "center" }}>Report filters</span>
       <select value={props.asset} onChange={(e) => props.onAsset(e.target.value)}>
         <option value="">All assets</option>
-        <option value="btc">BTC</option>
-        <option value="eth">ETH</option>
+        {props.assetOptions.map((a) => (
+          <option key={a} value={a}>{a.toUpperCase()}</option>
+        ))}
       </select>
       <select value={props.tf} onChange={(e) => props.onTf(e.target.value)}>
         <option value="">All timeframes</option>
@@ -401,6 +459,9 @@ function Overview({
   snap,
   rawSnap,
   viewTf,
+  viewAsset,
+  assetsList,
+  onSelectAsset,
   onKill,
   onOpenPriceGraph,
   canOpenPriceGraph,
@@ -409,12 +470,14 @@ function Overview({
   snap: Record<string, unknown>;
   rawSnap: Record<string, unknown>;
   viewTf: string;
+  viewAsset: string;
+  assetsList: string[];
+  onSelectAsset: (a: string) => void;
   onKill: () => void;
   onOpenPriceGraph: () => void;
   canOpenPriceGraph: boolean;
 }) {
-  const other = viewTf === "5m" ? "15m" : "5m";
-  const otherWin = pickWindow(rawSnap, other);
+  const assetRows = assetWindowsForTf(rawSnap, viewTf, assetsList);
   const feeds = (snap.feeds ?? {}) as Record<string, unknown>;
   const spot = (feeds.chainlink_spot ?? {}) as Record<string, unknown>;
   const twap = (feeds.chainlink_twap ?? {}) as Record<string, unknown>;
@@ -456,20 +519,38 @@ function Overview({
           </p>
         </div>
         <div className="card">
-          <h3>Current window ({viewTf})</h3>
-          {snap.view_active ? (
-            <MarketSummary market={snap.current_market as Record<string, unknown>} />
-          ) : (
-            <p className="empty">No active {viewTf} market in engine. {otherWin?.active ? `Try ${other}.` : "Waiting for lifecycle…"}</p>
-          )}
-          <NextMarket next={snap.next_market as Record<string, unknown>} />
-          {otherWin?.active && (
-            <p className="metric-label">Also live: {String((otherWin.market as Record<string, unknown>)?.slug ?? other)}</p>
-          )}
-          <div className="quick-links">
+          <h3>Configured windows ({viewTf})</h3>
+          <p className="metric-label">
+            {assetsList.length} assets in config · selected {viewAsset.toUpperCase()}
+          </p>
+          <div className="asset-window-grid">
+            {assetRows.map(({ asset, active, window }) => (
+              <button
+                key={asset}
+                type="button"
+                className={clsx(
+                  "asset-window-card",
+                  active && "active",
+                  viewAsset === asset && "selected",
+                )}
+                onClick={() => onSelectAsset(asset)}
+              >
+                <div className="metric-label" style={{ textTransform: "uppercase" }}>{asset}</div>
+                {active && window?.market ? (
+                  <>
+                    <MarketSummary market={window.market as Record<string, unknown>} />
+                    <NextMarket next={window.next_market as Record<string, unknown>} />
+                  </>
+                ) : (
+                  <p className="empty" style={{ margin: "8px 0 0" }}>Waiting for lifecycle…</p>
+                )}
+              </button>
+            ))}
+          </div>
+          <div className="quick-links" style={{ marginTop: 12 }}>
             {canOpenPriceGraph && (
               <button type="button" className="btn-secondary" onClick={onOpenPriceGraph}>
-                Price graph
+                Price graph ({viewAsset})
               </button>
             )}
             <button type="button" className="btn-secondary" onClick={onKill}>
@@ -697,7 +778,7 @@ function PriceChart({
         )}
       </div>
       <p className="metric-label" style={{ marginBottom: 12 }}>
-        BTC USD: Chainlink beat / spot / TWAP; Coinbase &amp; Binance spot + local TWAP-60; momentum = % change over configured N sec (1 Hz samples).
+        {chartAssetLabel(slug)} USD: Chainlink beat / spot / TWAP; Coinbase spot + local TWAP-60; momentum = % change over configured N sec (1 Hz samples, per asset).
         {fillMarkers.length > 0 && " Orange markers = fills (purchase time on CL spot)."}
         {" "}CLOB Up/Down asks are on Live market. Paper (dry-run) fills are stored the same way as live.
       </p>
@@ -722,10 +803,11 @@ function PriceChart({
                   fontSize={11}
                   tickFormatter={(ms) => formatChartTickMs(Number(ms))}
                 />
-                <YAxis stroke="#8b9cb3" fontSize={11} domain={["auto", "auto"]} />
+                <YAxis stroke="#8b9cb3" fontSize={11} domain={priceChartYDomain(chartData)} />
                 <Tooltip
-                  contentStyle={{ background: "#121820", border: "1px solid #1e2836" }}
-                  labelFormatter={(ms) => formatChartTickMs(Number(ms))}
+                  content={(props) => (
+                    <PriceGraphTooltip {...props} fillMarkers={fillMarkers} />
+                  )}
                 />
                 <Legend />
                 <Line type="monotone" dataKey="beat" name="Beat" stroke="#7c5cff" dot={false} connectNulls={false} strokeWidth={2} />
@@ -770,7 +852,7 @@ function PriceChart({
                     fontSize={11}
                     tickFormatter={(ms) => formatChartTickMs(Number(ms))}
                   />
-                  <YAxis stroke="#8b9cb3" fontSize={11} domain={["auto", "auto"]} tickFormatter={(v) => `${v}%`} />
+                  <YAxis stroke="#8b9cb3" fontSize={11} domain={[-2, 2]} tickFormatter={(v) => `${v}%`} />
                   <Tooltip
                     contentStyle={{ background: "#121820", border: "1px solid #1e2836" }}
                     labelFormatter={(ms) => formatChartTickMs(Number(ms))}
@@ -1064,6 +1146,176 @@ function dedupeChartBySecond(rows: ChartPoint[]): ChartPoint[] {
   return [...bySecond.values()].sort((a, b) => a.xMs - b.xMs);
 }
 
+/** Drop window-open garbage (wrong beat / cross-asset ticks) that causes vertical Recharts spikes. */
+function sanitizeChartSeries(rows: ChartPoint[], slug: string): ChartPoint[] {
+  if (rows.length === 0) return rows;
+  let sorted = [...rows].sort((a, b) => a.xMs - b.xMs);
+
+  const openMs = windowOpenMsFromSlug(slug);
+  if (openMs != null) {
+    const warmupEnd = openMs + 3000;
+    sorted = sorted.filter((p) => p.xMs >= warmupEnd);
+  }
+
+  const ref = robustChartAnchor(sorted);
+  if (ref == null) return sorted;
+
+  const inBand = (v?: number) =>
+    v != null && Number.isFinite(v) && v > 0 && v >= ref * 0.5 && v <= ref * 2;
+
+  let cleaned = sorted.map((p) => ({
+    ...p,
+    beat: inBand(p.beat) ? p.beat : undefined,
+    spot: inBand(p.spot) ? p.spot : undefined,
+    twap: inBand(p.twap) ? p.twap : undefined,
+    coinbase: inBand(p.coinbase) ? p.coinbase : undefined,
+    binance: inBand(p.binance) ? p.binance : undefined,
+    coinbaseTwap: inBand(p.coinbaseTwap) ? p.coinbaseTwap : undefined,
+    binanceTwap: inBand(p.binanceTwap) ? p.binanceTwap : undefined,
+  }));
+
+  while (cleaned.length > 1) {
+    const head = cleaned[0];
+    const hasFeed = inBand(head.spot) || inBand(head.twap) || inBand(head.coinbase) || inBand(head.beat);
+    if (hasFeed) break;
+    cleaned = cleaned.slice(1);
+  }
+
+  while (cleaned.length > 1 && headIsChartOutlier(cleaned[0], cleaned[1], ref)) {
+    cleaned = cleaned.slice(1);
+  }
+
+  return cleaned;
+}
+
+function windowOpenMsFromSlug(slug: string): number | null {
+  if (!slug) return null;
+  const tail = slug.split("-").pop() ?? "";
+  const openSec = parseInt(tail, 10);
+  if (!Number.isFinite(openSec) || openSec <= 0) return null;
+  return openSec * 1000;
+}
+
+function robustChartAnchor(rows: ChartPoint[]): number | null {
+  const vals: number[] = [];
+  for (const p of rows) {
+    for (const v of [p.spot, p.twap, p.coinbase, p.coinbaseTwap, p.binance, p.binanceTwap]) {
+      if (v != null && v > 0 && v < 10_000_000) vals.push(v);
+    }
+  }
+  if (vals.length === 0) return null;
+  vals.sort((a, b) => a - b);
+  return vals[Math.floor(vals.length / 2)];
+}
+
+/** Beat is window-open TWAP — must be same order of magnitude as spot/TWAP (not another asset's beat). */
+function beatMatchesPriceScale(beat: number | undefined, anchor: number | null): number | undefined {
+  if (beat == null || anchor == null || anchor <= 0) return undefined;
+  const ratio = beat / anchor;
+  if (ratio < 0.85 || ratio > 1.15) return undefined;
+  return beat;
+}
+
+function resolveWindowBeat(
+  series: Record<string, unknown>[],
+  seriesSlug: string,
+  reports: Record<string, unknown>[],
+  currentMarket: Record<string, unknown> | undefined,
+  anchor: number | null,
+): number | undefined {
+  if (anchor == null) return undefined;
+
+  const tryBeat = (raw?: string) =>
+    beatMatchesPriceScale(chartPrice(raw ?? ""), anchor);
+
+  for (const p of series) {
+    const pt = (p.point ?? {}) as Record<string, string>;
+    const b = tryBeat(pt.beat);
+    if (b != null) return b;
+  }
+
+  const fromReport = reports.find((r) => String(r.slug) === seriesSlug);
+  const reportBeat = tryBeat(String(fromReport?.beat ?? ""));
+  if (reportBeat != null) return reportBeat;
+
+  if (String(currentMarket?.slug) === seriesSlug) {
+    const liveBeat = tryBeat(String(currentMarket?.beat ?? ""));
+    if (liveBeat != null) return liveBeat;
+  }
+
+  return undefined;
+}
+
+function headIsChartOutlier(a: ChartPoint, b: ChartPoint, ref: number): boolean {
+  const pick = (p: ChartPoint) => p.beat ?? p.spot ?? p.twap ?? p.coinbase;
+  const va = pick(a);
+  const vb = pick(b);
+  if (va == null) return true;
+  if (vb == null) return va < ref * 0.5 || va > ref * 2;
+  return Math.abs(va - vb) / vb > 0.05 && (va < ref * 0.5 || va > ref * 2);
+}
+
+function PriceGraphTooltip({
+  active,
+  payload,
+  label,
+  fillMarkers,
+}: {
+  active?: boolean;
+  payload?: { payload?: ChartPoint; dataKey?: string; value?: number; name?: string }[];
+  label?: string | number;
+  fillMarkers: FillMarker[];
+}) {
+  if (!active || !payload?.length) return null;
+  const row = payload[0]?.payload as ChartPoint | undefined;
+  if (!row) return null;
+  const xMs = typeof label === "number" ? label : row.xMs;
+  const purchase = fillMarkers.find((m) => Math.abs(m.xMs - xMs) < 1500);
+
+  const rows: { name: string; value?: number; color: string }[] = [
+    { name: "Beat", value: row.beat, color: "#7c5cff" },
+    { name: "CL spot", value: row.spot, color: "#4da3ff" },
+    { name: "CL TWAP", value: row.twap, color: "#3dd68c" },
+    { name: "CB spot", value: row.coinbase, color: "#f7931a" },
+    { name: "CB TWAP60", value: row.coinbaseTwap, color: "#ffb347" },
+    { name: "BN spot", value: row.binance, color: "#f0b90b" },
+    { name: "BN TWAP60", value: row.binanceTwap, color: "#ffe066" },
+  ];
+
+  return (
+    <div
+      style={{
+        background: "#121820",
+        border: "1px solid #1e2836",
+        padding: "10px 12px",
+        fontSize: 12,
+        borderRadius: 6,
+      }}
+    >
+      <div style={{ color: "#8b9cb3", marginBottom: 8 }}>{formatChartTickMs(Number(xMs))}</div>
+      {rows.map(
+        (r) =>
+          r.value != null && (
+            <div key={r.name} style={{ color: r.color, marginTop: 4 }}>
+              {r.name} : {formatChartPrice(r.value)}
+            </div>
+          ),
+      )}
+      {purchase && (
+        <div style={{ color: "#f5a524", marginTop: 4 }}>
+          Purchase : {purchase.label} ({formatChartPrice(purchase.markY)} on CL spot)
+        </div>
+      )}
+    </div>
+  );
+}
+
+function formatChartPrice(n: number) {
+  if (!Number.isFinite(n)) return "—";
+  if (n >= 1000) return n.toFixed(2);
+  return n.toPrecision(6);
+}
+
 function FillMarkShape(props: {
   cx?: number;
   cy?: number;
@@ -1137,18 +1389,36 @@ function num(v?: string) {
 function chartPct(v?: string) {
   if (v == null || v === "" || v === "null") return undefined;
   const n = parseFloat(v);
-  if (!Number.isFinite(n)) return undefined;
+  if (!Number.isFinite(n) || Math.abs(n) > 50) return undefined;
   return n;
 }
 
-/** BTC USD chart: skip null/0/garbage so Recharts does not spike to the axis. */
+/** USD price series: omit invalid / absurd magnitudes (bad first ticks at window open). */
 function chartPrice(v?: string) {
   if (v == null || v === "" || v === "null") return undefined;
   const n = parseFloat(v);
-  if (!Number.isFinite(n) || n <= 0) return undefined;
-  // Crypto up/down windows use ~80k BTC; reject obvious placeholder zeros.
-  if (n < 1000) return undefined;
+  if (!Number.isFinite(n) || n <= 0 || n >= 10_000_000) return undefined;
   return n;
+}
+
+function chartAssetLabel(slug: string) {
+  const a = slug.split("-")[0]?.toUpperCase();
+  return a || "Asset";
+}
+
+function priceChartYDomain(data: ChartPoint[]): [number, number] | ["auto", "auto"] {
+  const vals: number[] = [];
+  for (const p of data) {
+    for (const k of ["beat", "spot", "twap", "coinbase", "binance", "coinbaseTwap", "binanceTwap"] as const) {
+      const v = p[k];
+      if (v != null && Number.isFinite(v)) vals.push(v);
+    }
+  }
+  if (vals.length === 0) return ["auto", "auto"];
+  const min = Math.min(...vals);
+  const max = Math.max(...vals);
+  const pad = Math.max((max - min) * 0.08, min * 0.0005, 0.01);
+  return [min - pad, max + pad];
 }
 
 function formatAge(age: unknown) {

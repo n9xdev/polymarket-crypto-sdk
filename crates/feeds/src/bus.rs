@@ -41,14 +41,20 @@ impl<T: Clone + Default> LatestSlot<T> {
 
 #[derive(Debug, Default)]
 pub struct SignalBus {
+    /// Legacy single slot (last writer); prefer per-asset maps for multi-asset configs.
     pub chainlink_spot: LatestSlot<PriceSlot>,
     pub chainlink_twap_30: LatestSlot<PriceSlot>,
     pub chainlink_twap_60: LatestSlot<PriceSlot>,
+    chainlink_spot_by_asset: RwLock<HashMap<String, PriceSlot>>,
+    chainlink_twap60_by_asset: RwLock<HashMap<String, PriceSlot>>,
     pub binance_spot: LatestSlot<PriceSlot>,
     pub binance_twap60: LatestSlot<PriceSlot>,
     pub coinbase_spot: LatestSlot<PriceSlot>,
     pub coinbase_twap60: LatestSlot<PriceSlot>,
     pub coinbase_momentum_pct: LatestSlot<PriceSlot>,
+    coinbase_spot_by_asset: RwLock<HashMap<String, PriceSlot>>,
+    coinbase_twap60_by_asset: RwLock<HashMap<String, PriceSlot>>,
+    coinbase_momentum_by_asset: RwLock<HashMap<String, PriceSlot>>,
     pub binance_momentum_pct: LatestSlot<PriceSlot>,
     pub book_up: LatestSlot<Bbo>,
     pub book_down: LatestSlot<Bbo>,
@@ -82,8 +88,88 @@ impl SignalBus {
         })
     }
 
+    pub fn write_chainlink_spot(&self, asset: &str, slot: PriceSlot) {
+        let key = asset.to_lowercase();
+        if let Ok(mut g) = self.chainlink_spot_by_asset.write() {
+            g.insert(key.clone(), slot.clone());
+        }
+        self.chainlink_spot.write(slot);
+    }
+
+    pub fn write_chainlink_twap60(&self, asset: &str, slot: PriceSlot) {
+        let key = asset.to_lowercase();
+        if let Ok(mut g) = self.chainlink_twap60_by_asset.write() {
+            g.insert(key, slot.clone());
+        }
+        self.chainlink_twap_60.write(slot);
+    }
+
+    pub fn write_coinbase_spot(&self, asset: &str, slot: PriceSlot) {
+        let key = asset.to_lowercase();
+        if let Ok(mut g) = self.coinbase_spot_by_asset.write() {
+            g.insert(key.clone(), slot.clone());
+        }
+        self.coinbase_spot.write(slot);
+    }
+
+    pub fn write_coinbase_twap60(&self, asset: &str, slot: PriceSlot) {
+        let key = asset.to_lowercase();
+        if let Ok(mut g) = self.coinbase_twap60_by_asset.write() {
+            g.insert(key.clone(), slot.clone());
+        }
+        self.coinbase_twap60.write(slot);
+    }
+
+    pub fn write_coinbase_momentum_pct(&self, asset: &str, slot: PriceSlot) {
+        let key = asset.to_lowercase();
+        if let Ok(mut g) = self.coinbase_momentum_by_asset.write() {
+            g.insert(key, slot.clone());
+        }
+        self.coinbase_momentum_pct.write(slot);
+    }
+
+    pub fn chainlink_spot_for(&self, asset: &str) -> PriceSlot {
+        self.price_for_asset(&self.chainlink_spot_by_asset, asset, || self.chainlink_spot.read())
+    }
+
+    pub fn chainlink_twap60_for(&self, asset: &str) -> PriceSlot {
+        self.price_for_asset(&self.chainlink_twap60_by_asset, asset, || self.chainlink_twap_60.read())
+    }
+
+    pub fn coinbase_spot_for(&self, asset: &str) -> PriceSlot {
+        self.price_for_asset(&self.coinbase_spot_by_asset, asset, || self.coinbase_spot.read())
+    }
+
+    pub fn coinbase_twap60_for(&self, asset: &str) -> PriceSlot {
+        self.price_for_asset(&self.coinbase_twap60_by_asset, asset, || self.coinbase_twap60.read())
+    }
+
+    pub fn coinbase_momentum_for(&self, asset: &str) -> PriceSlot {
+        self.price_for_asset(
+            &self.coinbase_momentum_by_asset,
+            asset,
+            || self.coinbase_momentum_pct.read(),
+        )
+    }
+
+    fn price_for_asset(
+        &self,
+        map: &RwLock<HashMap<String, PriceSlot>>,
+        asset: &str,
+        fallback: impl FnOnce() -> PriceSlot,
+    ) -> PriceSlot {
+        let key = asset.to_lowercase();
+        if let Ok(g) = map.read() {
+            if let Some(s) = g.get(&key) {
+                return s.clone();
+            }
+        }
+        fallback()
+    }
+
     pub fn snapshot(
         &self,
+        asset: &str,
         twap_lookback_sec: u32,
         open_ts_ms: i64,
         close_ts_ms: i64,
@@ -91,11 +177,11 @@ impl SignalBus {
         token_down: &str,
     ) -> Signal {
         let now_ms = Utc::now().timestamp_millis();
-        let mut spot = self.chainlink_spot.read();
+        let mut spot = self.chainlink_spot_for(asset);
         let twap_slot = if twap_lookback_sec == 30 {
             self.chainlink_twap_30.read()
         } else {
-            self.chainlink_twap_60.read()
+            self.chainlink_twap60_for(asset)
         };
         let spot_stale = is_stale(spot.src_ts_ms, now_ms, STALE_SPOT_MS) || !spot.valid;
         spot.stale = spot_stale;
@@ -123,10 +209,13 @@ impl SignalBus {
             chainlink_twap: twap,
             binance_spot: self.mark_stale(self.binance_spot.read(), now_ms, STALE_SPOT_MS),
             binance_twap60: self.mark_stale(self.binance_twap60.read(), now_ms, STALE_TWAP_MS),
-            coinbase_spot: self.mark_stale(self.coinbase_spot.read(), now_ms, STALE_SPOT_MS),
-            coinbase_twap60: self.mark_stale(self.coinbase_twap60.read(), now_ms, STALE_TWAP_MS),
-            coinbase_momentum_pct: self
-                .mark_stale(self.coinbase_momentum_pct.read(), now_ms, STALE_SPOT_MS),
+            coinbase_spot: self.mark_stale(self.coinbase_spot_for(asset), now_ms, STALE_SPOT_MS),
+            coinbase_twap60: self.mark_stale(self.coinbase_twap60_for(asset), now_ms, STALE_TWAP_MS),
+            coinbase_momentum_pct: self.mark_stale(
+                self.coinbase_momentum_for(asset),
+                now_ms,
+                STALE_SPOT_MS,
+            ),
             binance_momentum_pct: self
                 .mark_stale(self.binance_momentum_pct.read(), now_ms, STALE_SPOT_MS),
             up_bbo: up,

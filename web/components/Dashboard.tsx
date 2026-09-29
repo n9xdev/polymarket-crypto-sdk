@@ -75,6 +75,8 @@ const NAV_GROUPS: { label: string; items: { id: Tab; label: string }[] }[] = [
   },
 ];
 
+const TRADING_TABS = new Set<Tab>(["overview", "live", "chart"]);
+
 export default function Dashboard() {
   const [tab, setTab] = useState<Tab>("overview");
   const [data, setData] = useState<DashboardPayload | null>(null);
@@ -315,13 +317,15 @@ export default function Dashboard() {
           {killMsg && <span style={{ color: "var(--amber)", fontSize: 13 }}>{killMsg}</span>}
         </header>
 
-        <ViewBar
-          viewTf={viewTf}
-          viewAsset={viewAsset}
-          onViewTf={setViewTf}
-          onViewAsset={setViewAsset}
-          config={configBundle}
-        />
+        {TRADING_TABS.has(tab) && (
+          <ViewBar
+            viewTf={viewTf}
+            viewAsset={viewAsset}
+            onViewTf={setViewTf}
+            onViewAsset={setViewAsset}
+            config={configBundle}
+          />
+        )}
 
         {(tab === "reports" || tab === "analytics") && (
           <ReportFiltersBar
